@@ -1,9 +1,10 @@
 Package: com.makr.lineageqs
 Name: LineageQS
-Version: 0.4.8
+Version: 0.4.9
 Architecture: iphoneos-arm64
 Description: Android 17 (LineageOS 24) notification shade and Quick Settings for iOS 16: tiles with real actions, notifications, media player, tile editor, Material You colours.
 Maintainer: makr
 Author: makr
 Section: Tweaks
 Depends: mobilesubstrate, preferenceloader, com.makr.materialyou
+Icon: https://makrsas.github.io/repo/icons/lineageqs.png
