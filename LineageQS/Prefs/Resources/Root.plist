@@ -1,0 +1,193 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>items</key>
+	<array>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>footerText</key>
+			<string>По умолчанию выключено. Применяется сразу, без перезапуска SpringBoard. Не включайте одновременно с an earlier prototype: оба заменяют Пункт управления и жест сверху.</string>
+			<key>label</key>
+			<string>Пункт управления</string>
+		</dict>
+		<dict>
+			<key>PostNotification</key>
+			<string>com.makr.lineageqs/prefs-changed</string>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<false/>
+			<key>defaults</key>
+			<string>com.makr.lineageqs</string>
+			<key>key</key>
+			<string>enabled</string>
+			<key>label</key>
+			<string>Заменять Пункт управления</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>footerText</key>
+			<string>Реальные действия: плитки управляют iOS (Wi‑Fi, Bluetooth, сотовая связь, авиарежим, фонарик, автоповорот, тёмная тема, энергосбережение, Night Shift, инверсия, «Не беспокоить», запись экрана, яркость). Wallet, Будильник, Дом и QR открывают приложение. Трансляция, точка доступа, экономия трафика и геолокация открывают Настройки.</string>
+			<key>label</key>
+			<string>Шторка Android 17</string>
+		</dict>
+		<dict>
+			<key>PostNotification</key>
+			<string>com.makr.lineageqs/prefs-changed</string>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<false/>
+			<key>defaults</key>
+			<string>com.makr.lineageqs</string>
+			<key>key</key>
+			<string>realActions</string>
+			<key>label</key>
+			<string>Реальные действия плиток</string>
+		</dict>
+		<dict>
+			<key>PostNotification</key>
+			<string>com.makr.lineageqs/prefs-changed</string>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<true/>
+			<key>defaults</key>
+			<string>com.makr.lineageqs</string>
+			<key>key</key>
+			<string>showNotifications</string>
+			<key>label</key>
+			<string>Уведомления под быстрыми настройками</string>
+		</dict>
+		<dict>
+			<key>PostNotification</key>
+			<string>com.makr.lineageqs/prefs-changed</string>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<true/>
+			<key>defaults</key>
+			<string>com.makr.lineageqs</string>
+			<key>key</key>
+			<string>showAutoBrightness</string>
+			<key>label</key>
+			<string>Кнопка автояркости</string>
+		</dict>
+		<dict>
+			<key>PostNotification</key>
+			<string>com.makr.lineageqs/prefs-changed</string>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<false/>
+			<key>defaults</key>
+			<string>com.makr.lineageqs</string>
+			<key>key</key>
+			<string>blurSurfaces</string>
+			<key>label</key>
+			<string>Размытие плиток и уведомлений</string>
+		</dict>
+		<dict>
+			<key>PostNotification</key>
+			<string>com.makr.lineageqs/prefs-changed</string>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<true/>
+			<key>defaults</key>
+			<string>com.makr.lineageqs</string>
+			<key>key</key>
+			<string>haptics</string>
+			<key>label</key>
+			<string>Отклик вибрацией</string>
+		</dict>
+		<dict>
+			<key>PostNotification</key>
+			<string>com.makr.lineageqs/prefs-changed</string>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<false/>
+			<key>defaults</key>
+			<string>com.makr.lineageqs</string>
+			<key>key</key>
+			<string>demoStates</string>
+			<key>label</key>
+			<string>Демо-состояния (без действий)</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>footerText</key>
+			<string>Свайп сверху открывает шторку Android вместо Центра уведомлений iOS. Свайп снизу можно отключить, когда шторка заменяет Пункт управления.</string>
+			<key>label</key>
+			<string>Жесты</string>
+		</dict>
+		<dict>
+			<key>PostNotification</key>
+			<string>com.makr.lineageqs/prefs-changed</string>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<false/>
+			<key>defaults</key>
+			<string>com.makr.lineageqs</string>
+			<key>key</key>
+			<string>topSwipe</string>
+			<key>label</key>
+			<string>Свайп сверху открывает шторку</string>
+		</dict>
+		<dict>
+			<key>PostNotification</key>
+			<string>com.makr.lineageqs/prefs-changed</string>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<true/>
+			<key>defaults</key>
+			<string>com.makr.lineageqs</string>
+			<key>key</key>
+			<string>bottomSwipe</string>
+			<key>label</key>
+			<string>Свайп снизу открывает Пункт управления</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>label</key>
+			<string>Раскладка</string>
+		</dict>
+		<dict>
+			<key>action</key>
+			<string>resetLayout</string>
+			<key>cell</key>
+			<string>PSButtonCell</string>
+			<key>label</key>
+			<string>Сбросить раскладку плиток</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>footerText</key>
+			<string>Аварийно: создаёт /var/mobile/Library/LineageQS/DISABLE и сразу возвращает штатный Пункт управления. Без Настроек: по SSH `lqsctl disable` или `touch /var/mobile/Library/LineageQS/DISABLE` + respring. Удаление пакета: `apt remove com.makr.lineageqs`.</string>
+			<key>label</key>
+			<string>Восстановление</string>
+		</dict>
+		<dict>
+			<key>action</key>
+			<string>emergencyDisable</string>
+			<key>cell</key>
+			<string>PSButtonCell</string>
+			<key>isDestructive</key>
+			<true/>
+			<key>label</key>
+			<string>Аварийно отключить LineageQS</string>
+		</dict>
+	</array>
+	<key>title</key>
+	<string>LineageQS</string>
+</dict>
+</plist>

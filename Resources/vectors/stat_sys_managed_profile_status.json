@@ -1,0 +1,1 @@
+{"name":"stat_sys_managed_profile_status","source":["res/drawable/stat_sys_managed_profile_status.xml"],"viewport":[24.0,24.0],"size":[17.0,17.0],"alpha":1.0,"nodes":[{"type":"path","name":null,"d":"@*android:string/config_work_badge_path_24","fill":"@android:color/white"}]}

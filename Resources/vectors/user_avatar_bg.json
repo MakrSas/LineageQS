@@ -1,0 +1,1 @@
+{"name":"user_avatar_bg","source":["res/drawable/user_avatar_bg.xml"],"viewport":[100.0,100.0],"size":[48.0,48.0],"alpha":1.0,"nodes":[{"type":"path","name":null,"d":"M50,50m-50,0a50,50 0,1 1,100 0a50,50 0,1 1,-100 0","fill":"?android:attr/colorBackgroundFloating"}]}

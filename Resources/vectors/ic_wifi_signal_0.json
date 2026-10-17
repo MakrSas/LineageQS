@@ -1,0 +1,1 @@
+{"name":"ic_wifi_signal_0","source":["res/drawable/ic_wifi_signal_0.xml"],"viewport":[24.0,24.0],"size":[24.0,24.0],"alpha":1.0,"nodes":[{"type":"path","name":null,"d":"M12,4c3.42,0,6.73,1.27,9.3,3.53L12,18.85L2.7,7.53C5.27,5.27,8.58,4,12,4 M12,2C7.25,2,2.97,4.08,0,7.39L12,22L24,7.39 C21.03,4.08,16.75,2,12,2L12,2z","fill":"@android:color/white"}]}

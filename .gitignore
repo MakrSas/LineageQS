@@ -1,0 +1,4 @@
+packages/
+.theos/
+host/build/
+.DS_Store

@@ -1,0 +1,9 @@
+LineageQS — Copyright 2026 makr. Licensed under the Apache License 2.0.
+
+Contains material derived from the Android Open Source Project (Apache License 2.0):
+- SystemUI (LineageOS 24 / Android 17): Quick Settings, shade, notifications, media controls, battery glyphs;
+  and used to generate Resources/monet_table.bin (tools/Gen.java);
+- frameworks/libs/systemui monet (ColorScheme, DynamicColors), ThemePicker colour picker design;
+- SystemUI / framework resources (vector icons, strings, default colours).
+Fonts: Google Sans Flex and Roboto Flex, SIL Open Font License 1.1 (Resources/fonts/*-OFL.txt).
+Android is a trademark of Google LLC. Not affiliated with Google or LineageOS.
