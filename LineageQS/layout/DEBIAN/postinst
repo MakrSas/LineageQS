@@ -1,0 +1,4 @@
+#!/bin/sh
+# Ask Sileo/Zebra/Cydia for a respring after install/removal.
+if [ -n "$CYDIA" ]; then eval "echo finish:restart >&${CYDIA%% *}"; fi
+exit 0
