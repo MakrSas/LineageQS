@@ -287,7 +287,7 @@ Scrim в этой стадии: см. раздел 5.
 5. **Scrim**: `getNotificationScrimAlpha(qFraction)` (`SIA:13-16`).
 6. **Header morph**: прогресс `q` для MotionLayout-подобного перехода шапки (`SHC:621-626`); альфа шапки `getContentAlpha(shadeFraction)` (`SHC:225`).
 7. **Порог касания/жеста**: slop на iOS - системный (`UIPanGestureRecognizer`), **предположение**; falsing порог `60 pt` (`qs_falsing_threshold`, `dimens.xml:858`); порог скорости **125 pt/s** (`SwipeDetector.kt:44`), позиционный **56 pt** (`DraggableHandler.kt:59-60`).
-8. **Решение о раскрытии** (раздел 3.2): `flingExpands(vel) = |vel| < minVel ? (q > 0.5 || H_frac > 0.5) : vel > 0`. Значение `minVel` не найдено в дереве (платформа), **предположение**: брать 125 pt/s из Compose-порога.
+8. **Решение о раскрытии** (раздел 3.2): `flingExpands(vel) = |vel| < minVel ? (q > 0.5 || H_frac > 0.5) : vel > 0`. Для classic shade `FlingAnimationUtils` задаёт 250 dp/s, не Compose-порог 125 dp/s (уточнение: раздел 14).
 9. **Длительности**: открытие 0.4 с, закрытие 0.6 с, dismiss 0.5 с, клик/тап 368 мс, смена направления 350 мс, пружина возврата 400 мс, overshoot `16 pt * k` (`k = lerp(0.2, 1, saturate(vel / (highVel*0.5)))`), кривая `FAST_OUT_SLOW_IN = (0.4, 0, 0.2, 1)`.
 10. **Пружины** (если нужна физика вместо кривых): attach/detach `stiffness 380, damping 0.9`; opacity `1200 / 0.99` (`VECS:156-158`). Высоты для "магнитного" detach: `visible 24 pt`, `preDetach 0.25`, `detach 80 pt`, `attach 40 pt` (`VECS:146-149`).
 11. **Прямое открытие QS**: два пальца от верхнего края статус-бара (`QSC:616-650`, `SUA:52`); одиночный тап по QQS/заголовку (`QSC:733-770`); на iOS - кастомный edge-pan + двухпальцевый pan.
@@ -297,7 +297,7 @@ Scrim в этой стадии: см. раздел 5.
 
 ## 9. Чего в дереве нет (ограничения)
 
-- **`FlingAnimationUtils`** (`getMinVelocityPxPerSecond`, `getHighVelocityPxPerSecond`, `apply`): класс не найден в `upstream/` (платформенный код). Числа `minVel` и `highVel` **неизвестны** по этому дереву.
+- **`FlingAnimationUtils`**: найден в `libs/WindowManager/Shell/src/com/android/wm/shell/animation/`; minVelocity = 250 dp/s, highVelocity = 3000 dp/s. Алгоритм и перенос описаны в разделе 14.
 - **Системный `ViewConfiguration`** (touch slop, ambiguous gesture multiplier): значения не в дереве.
 - **`MotionScheme` (material3)**: `slowSpatialSpec`, `defaultSpatialSpec` и т.п. не найдены в дереве. Их конкретные пружины **неизвестны**.
 - **Значения флагов** (`scene_container`, `notification_shade_blur`, `shade_qsvisible_logic`, `dual_shade`): видны описания в `systemui.aconfig`, но дефолты заданы вне дерева.
@@ -345,7 +345,7 @@ Scrim в этой стадии: см. раздел 5.
 
 Проверено чтением: весь путь legacy (touch, fling, clip, scrim, header), Compose QS (VM, STL, squish, переходы), scene-жесты (SUA, DraggableHandler, SwipeDetector), пружины mechanics (VECS), интерполяторы (INTERP), scrim-интерполяторы (SIA, SCRIM).
 
-Не проверено: фактические значения флагов в сборке, платформенные FlingAnimationUtils и ViewConfiguration, MotionScheme материал3, точная раскладка ShadeHeader MotionLayout (constraint sets `CombinedShadeHeadersConstraintManagerImpl.kt` не разбирались подробно), поведение на устройстве.
+Не проверено: фактические значения флагов в сборке, платформенный ViewConfiguration, MotionScheme материал3, точная раскладка ShadeHeader MotionLayout (constraint sets `CombinedShadeHeadersConstraintManagerImpl.kt` не разбирались подробно), поведение на устройстве.
 
 
 ## 12. Notification-area mapping in the iOS classic single shade
@@ -412,3 +412,42 @@ Sources:
 - [FooterActions](https://github.com/LineageOS/android_frameworks_base/blob/lineage-24.0/packages/SystemUI/compose/features/src/com/android/systemui/qs/footer/ui/compose/FooterActions.kt), [resource dimensions](https://github.com/LineageOS/android_frameworks_base/blob/lineage-24.0/packages/SystemUI/res/values/dimens.xml)
 - [Expandable touch/visual sizing](https://github.com/LineageOS/android_frameworks_base/blob/lineage-24.0/packages/SystemUI/compose/core/src/com/android/compose/animation/Expandable.kt)
 - [PaginatedGridLayout footer](https://github.com/LineageOS/android_frameworks_base/blob/lineage-24.0/packages/SystemUI/src/com/android/systemui/qs/panels/ui/compose/PaginatedGridLayout.kt)
+
+## 14. Classic-shade release curves
+
+`LQSFling.h` adapts the actual `FlingAnimationUtils.getProperties` algorithm,
+replacing the previous custom Hermite release curve. The existing layout mapping
+uses 1dp = 1pt (density 1), so velocities are pt/s. Minimum/high velocities are
+250/3000, not the separate Compose gesture threshold.
+
+The duration cap is `maxSeconds * sqrt(remainingDistance / maxDistance)`.
+The utility chooses a velocity-dependent cubic, a crossfade between constant
+velocity and that cubic, or `FAST_OUT_SLOW_IN` below the minimum velocity.
+The crossfade uses `LINEAR_OUT_SLOW_IN`. Animator milliseconds are truncated;
+the velocity interpolator retains the unrounded duration.
+
+The port uses the post-`loadDimens` opening builder (0.4s, default speedUp=0).
+Classic unlocked dismissal uses 0.5s, speedUp=0.6, x2=0.6, y2=0.84;
+zero-velocity dismissal instead uses `PANEL_CLOSE_ACCELERATED` and
+`200 + expandedFraction * 100` milliseconds. Zero-velocity opening lasts 350ms.
+QS gestures use the opening utility with remaining distance as maxDistance;
+opposite-direction velocity is reset and duration overridden to 350ms.
+Clicks alone use the 368ms `TOUCH_RESPONSE` curve.
+
+Already-animated native iOS progress samples still pass through directly:
+the Android planner drives QS and endpoint-only fallback settles, not a second
+ease over native motion. Native gesture acceptance and endpoint decisions remain
+iOS-owned. The existing overshoot is still an approximation, not a complete
+port of Android's over-expansion/spring-back physics.
+
+A temporary external harness compared the production C algorithm against the
+unmodified LineageOS Java class with minimal platform adapters, including a
+numerical cubic adapter: 2,080 cases / 210,080 curve samples, maximum curve
+difference 0.000000253 and duration difference 1ms (float/double rounding).
+This verifies the curve calculation, not on-device gesture/rendering behavior.
+
+Sources:
+
+- [FlingAnimationUtils](https://github.com/LineageOS/android_frameworks_base/blob/lineage-24.0/libs/WindowManager/Shell/src/com/android/wm/shell/animation/FlingAnimationUtils.java)
+- [NotificationPanelViewController](https://github.com/LineageOS/android_frameworks_base/blob/lineage-24.0/packages/SystemUI/src/com/android/systemui/shade/NotificationPanelViewController.java)
+- [QuickSettingsControllerImpl](https://github.com/LineageOS/android_frameworks_base/blob/lineage-24.0/packages/SystemUI/src/com/android/systemui/shade/QuickSettingsControllerImpl.java)

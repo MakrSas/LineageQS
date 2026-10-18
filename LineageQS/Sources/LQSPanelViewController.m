@@ -11,6 +11,7 @@
 #import "LQSEditor.h"
 #import "LQSMediaCard.h"
 #import "LQSLayout.h"
+#import "LQSFling.h"
 
 NSString *const LQSLiveInfoChangedNotification = @"LQSLiveInfoChangedNotification";
 
@@ -114,7 +115,8 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
     CGFloat _qFrom, _qTo, _settleFrom, _settleTo, _pageFrom, _pageTo;
     CFTimeInterval _qStartTime, _qDuration, _settleStart, _settleDuration, _pageStartTime;
     CFTimeInterval _lastInteractiveTime;
-    CGFloat _lastInteractiveProgress, _interactiveVelocity, _settleVelocity, _qVelocity;
+    CGFloat _lastInteractiveProgress, _interactiveVelocity;
+    LQSFling _settleFling, _qFling;
     NSTimer *_liveTimer;
     BOOL _liveRefreshPending;
     LQSDetailDialog *_dialog;
@@ -757,7 +759,7 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
     }
     if (_state == LQSPanelStateEditor) [self hideEditor:animated];
     _state = state;
-    [self animateQTo:(state == LQSPanelStateExpanded ? 1 : 0) velocity:0 animated:animated];
+    [self animateQTo:(state == LQSPanelStateExpanded ? 1 : 0) velocity:0 animated:animated isClick:YES];
 }
 
 - (void)editTapped { LQSHapticTick(); [self setState:LQSPanelStateEditor animated:YES]; }
@@ -815,17 +817,23 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
     }];
 }
 
-// QS fling: click 368 ms TOUCH_RESPONSE (0.3,0,0.1,1); otherwise FlingAnimationUtils
-// (max 0.4 s) approximated with FAST_OUT_SLOW_IN and a velocity-based duration.
-- (void)animateQTo:(CGFloat)target velocity:(CGFloat)v animated:(BOOL)animated {
+// QSC.flingQs: click uses TOUCH_RESPONSE; gestures use NPVC's fling utility.
+- (void)animateQTo:(CGFloat)target velocity:(CGFloat)v animated:(BOOL)animated isClick:(BOOL)isClick {
     [_qLink invalidate];
     _qLink = nil;
-    if (!animated || UIAccessibilityIsReduceMotionEnabled()) { [self setQ:target]; return; }
+    if (!animated || UIAccessibilityIsReduceMotionEnabled() || fabs(target - _q) < 0.000001) {
+        [self setQ:target]; _state = target > 0.5 ? LQSPanelStateExpanded : LQSPanelStateCompact; return;
+    }
     _qFrom = _q;
     _qTo = target;
-    CGFloat dist = fabs(target - _q) * ([self qsBottom] - [self qqsBottom]);
-    _qVelocity = v / MAX(100, [self qsBottom] - [self qqsBottom]);
-    _qDuration = v == 0 ? 0.368 : MAX(0.15, MIN(0.4, dist / MAX(1, fabs(v)) * 2.0));
+    CGFloat travel = MAX(100, [self qsBottom] - [self qqsBottom]);
+    CGFloat distance = fabs(target - _q) * travel;
+    BOOL oppositeDirection = v * (target - _q) < 0;
+    if (oppositeDirection) v = 0;
+    _qFling = isClick ? LQSFlingCurve(0.368, 0.3, 0, 0.1, 1)
+        : LQSAndroidFling(_q * travel, target * travel, v, distance, 0.4, 0, -1, 1);
+    if (oppositeDirection) _qFling.duration = 0.35;
+    _qDuration = MAX(0.001, _qFling.duration);
     _qStartTime = CACurrentMediaTime();
     _qLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(qTick:)];
     [_qLink addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
@@ -834,9 +842,7 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
 - (void)qTick:(CADisplayLink *)l {
     if (l != _qLink) return;
     CGFloat f = MIN(1, (CACurrentMediaTime() - _qStartTime) / _qDuration);
-    CGFloat e = LQSCubic(0.3, 0, 0.1, 1, f);
-    if (_qVelocity * (_qTo - _qFrom) > 0)
-        e = LQSReleaseFraction(f, _qVelocity, _qTo - _qFrom, _qDuration);
+    CGFloat e = LQSFlingValue(_qFling, f, LQSCubic);
     [self setQ:Lerp(_qFrom, _qTo, e)];
     if (f >= 1 && l == _qLink) { [_qLink invalidate]; _qLink = nil; _state = _qTo > 0.5 ? LQSPanelStateExpanded : LQSPanelStateCompact; }
 }
@@ -888,11 +894,22 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
     _settleFrom = _progress;
     _settleTo = progress;
     _settleStart = now;
-    _settleVelocity = now - _lastInteractiveTime <= 0.12 ? _interactiveVelocity : 0;
+    CGFloat height = MAX(1, self.view.bounds.size.height);
+    CGFloat velocity = now - _lastInteractiveTime <= 0.12 ? _interactiveVelocity * height : 0;
     _lastInteractiveTime = 0;
     _interactiveVelocity = 0;
-    _settleDuration = UIAccessibilityIsReduceMotionEnabled() ? 0.12 : LQSShadeSettleDuration(_progress, progress);
-    if (UIAccessibilityIsReduceMotionEnabled()) _settleVelocity = 0;
+    BOOL opening = progress > _progress;
+    // NPVC's classic unlocked shade: opening uses the post-loadDimens 0.4s
+    // utility; dismissing uses max=0.5, speedUp=0.6, x2=0.6, y2=0.84.
+    _settleFling = LQSAndroidFling(_progress * height, progress * height, velocity, height,
+                                 opening ? 0.4 : 0.5, opening ? 0 : 0.6,
+                                 opening ? -1 : 0.6, opening ? 1 : 0.84);
+    if (velocity == 0) {
+        if (opening) _settleFling.duration = 0.35; // SHADE_OPEN_SPRING_OUT_DURATION
+        else _settleFling = LQSFlingCurve(0.2 + 0.1 * _progress, 0.3, 0, 0.5, 1);
+    }
+    if (UIAccessibilityIsReduceMotionEnabled()) _settleFling.duration = 0.12;
+    _settleDuration = MAX(0.001, _settleFling.duration);
     [_content.layer removeAnimationForKey:@"overshoot"];
     if (progress > _progress && !UIAccessibilityIsReduceMotionEnabled()) {
         CAKeyframeAnimation *o = [CAKeyframeAnimation animationWithKeyPath:@"transform.translation.y"];
@@ -911,10 +928,7 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
 - (void)settleTick:(CADisplayLink *)link {
     if (link != _settleLink) return;
     CGFloat f = MIN(1, (CACurrentMediaTime() - _settleStart) / _settleDuration);
-    BOOL opening = _settleTo > _settleFrom;
-    CGFloat e = opening ? LQSCubic(0.4, 0, 0.2, 1, f) : LQSCubic(0.3, 0, 0.5, 1, f);
-    if (_settleVelocity * (_settleTo - _settleFrom) > 0)
-        e = LQSReleaseFraction(f, _settleVelocity, _settleTo - _settleFrom, _settleDuration);
+    CGFloat e = LQSFlingValue(_settleFling, f, LQSCubic);
     [UIView performWithoutAnimation:^{
         [self applyPresentationProgress:self->_settleFrom + (self->_settleTo - self->_settleFrom) * e];
     }];
@@ -1032,8 +1046,8 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
                 break;
             }
             // flingExpandsQs: below the minimum velocity decide by position, else by direction.
-            BOOL expand = fabs(vy) < 125 ? _q > 0.5 : vy > 0;
-            [self animateQTo:expand ? 1 : 0 velocity:vy animated:YES];
+            BOOL expand = fabs(vy) < 250 ? _q > 0.5 : vy > 0;
+            [self animateQTo:expand ? 1 : 0 velocity:vy animated:YES isClick:NO];
             break;
         }
         default: break;
@@ -1086,8 +1100,8 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
         case UIGestureRecognizerStateEnded:
         case UIGestureRecognizerStateCancelled: {
             if (_listMode == 1) {
-                BOOL expand = fabs(vy) < 125 ? _q > 0.5 : vy > 0;
-                [self animateQTo:expand ? 1 : 0 velocity:vy animated:YES];
+                BOOL expand = fabs(vy) < 250 ? _q > 0.5 : vy > 0;
+                [self animateQTo:expand ? 1 : 0 velocity:vy animated:YES isClick:NO];
             } else if (_listMode == 2) {
                 CGFloat dy = ty - _listModeY;
                 if (-dy > 56 || vy < -125) [self.delegate panelRequestsDismiss:self];

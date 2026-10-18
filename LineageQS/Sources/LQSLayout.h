@@ -31,20 +31,6 @@ static inline double LQSShadeDragProgress(double start, double delta, double hei
     return fmax(0, fmin(1, start + delta / fmax(1, height)));
 }
 
-// Endpoint-only fallback: do not spend a full opening duration on a tiny tail.
-static inline double LQSShadeSettleDuration(double from, double to) {
-    double base = to > from ? 0.35 : 0.2 + 0.1 * fmax(0, fmin(1, from));
-    return fmax(0.08, base * sqrt(fmin(1, fabs(to - from))));
-}
-
-// Velocity-continuous release, ending at rest. Clamp the initial tangent to
-// keep the cubic monotonic and bounded under fast flings and reversals.
-static inline double LQSReleaseFraction(double fraction, double velocity, double delta, double duration) {
-    double t = fmax(0, fmin(1, fraction));
-    double slope = fabs(delta) > 0.000001 ? fmax(0, fmin(3, velocity * duration / delta)) : 0;
-    return (3 * t * t - 2 * t * t * t) + slope * t * (1 - t) * (1 - t);
-}
-
 // LineageOS 24 classic shade: system bottom inset, then FooterActions with
 // 8dp top / 4dp bottom padding and 48dp interactive targets (40dp visuals).
 // UIKit safeBottom substitutes for Android's bottomStableInsets; do not invent
