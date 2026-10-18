@@ -1,3 +1,4 @@
+#import <dlfcn.h>
 #import "LQSRootListController.h"
 #import <Preferences/PSSpecifier.h>
 #import <notify.h>
@@ -8,6 +9,12 @@
 
 static NSString *L(NSString *k) { return [[NSBundle bundleForClass:NSClassFromString(@"LQSRootListController")] localizedStringForKey:k value:k table:@"Root"]; }
 
+static NSString *LQSJBPath(NSString *path) {
+    const char *(*jbroot)(const char *) = (const char *(*)(const char *))dlsym(RTLD_DEFAULT, "jbroot");
+    const char *r = jbroot ? jbroot(path.fileSystemRepresentation) : NULL;
+    return r ? @(r) : [@"/var/jb" stringByAppendingString:path];
+}
+
 @implementation LQSRootListController
 
 - (NSArray *)specifiers {
@@ -17,7 +24,7 @@ static NSString *L(NSString *k) { return [[NSBundle bundleForClass:NSClassFromSt
 
 - (void)openColors {
     NSString *root = nil;
-    for (NSString *p in @[@"/var/jb/Library/Application Support/LineageQS", @"/Library/Application Support/LineageQS"])
+    for (NSString *p in @[LQSJBPath(@"/Library/Application Support/LineageQS"), @"/Library/Application Support/LineageQS"])
         if ([[NSFileManager defaultManager] fileExistsAtPath:p]) { root = p; break; }
     if (!root) return;
     [LQSTheme setResourceRoot:root];

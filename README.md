@@ -24,3 +24,11 @@ Visual tokens, animations and behaviour come from the AOSP / LineageOS sources. 
 - A boot-loop guard disables the tweak after repeated crashes.
 
 Apache License 2.0, see NOTICE.
+
+## roothide branch
+
+This branch builds for roothide (Procursus roothide, Nyxian "Procursus Jailed"):
+build as usual with `build.sh`, then `scripts/roothide.sh packages/<pkg>_iphoneos-arm64.deb`
+produces the `iphoneos-arm64e` package.
+In the jailed ROM there is no Control Center: the shade opens with a downward
+swipe anywhere on the home screen and is enabled by default.

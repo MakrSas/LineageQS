@@ -5,6 +5,6 @@ Architecture: iphoneos-arm64
 Description: LineageOS 24 / Android 17 notification shade and quick settings for iOS 16.
 Maintainer: makr
 Author: makr
-Section: Lineage
+Section: Test
 Depends: mobilesubstrate, preferenceloader, com.makr.materialyou
 Icon: https://makrsas.github.io/repo/icons/lineageqs.png

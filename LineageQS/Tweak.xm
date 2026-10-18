@@ -71,8 +71,17 @@ static void NLog(NSString *format, ...) {
     [fh closeFile];
 }
 
+// roothide: files live under a random jbroot; libroothide exports jbroot().
+static NSString *JBPath(NSString *path) {
+    static const char *(*jbroot)(const char *);
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ jbroot = (const char *(*)(const char *))dlsym(RTLD_DEFAULT, "jbroot"); });
+    if (jbroot) { const char *r = jbroot(path.fileSystemRepresentation); if (r) return @(r); }
+    return [@"/var/jb" stringByAppendingString:path];
+}
+
 static NSString *ResourceRoot(void) {
-    for (NSString *p in @[@"/var/jb/Library/Application Support/LineageQS", @"/Library/Application Support/LineageQS"]) {
+    for (NSString *p in @[JBPath(@"/Library/Application Support/LineageQS"), @"/Library/Application Support/LineageQS"]) {
         if ([[NSFileManager defaultManager] fileExistsAtPath:p]) return p;
     }
     return nil;
@@ -180,6 +189,7 @@ static void ReloadPrefs(void) {
     }
 }
 
+%group Native
 %hook CCUIModularControlCenterOverlayViewController
 
 - (void)viewDidLoad {
@@ -395,6 +405,164 @@ static BOOL RouteTopGesture(UIPanGestureRecognizer *g) {
     %orig;
 }
 %end
+%end // group Native
+
+
+#pragma mark - Jailed SpringBoard (Nyxian Procursus Jailed)
+
+// The jailed ROM ships its own SpringBoard (NX* classes) without Control Center.
+// The panel lives in its own window and opens with a downward swipe anywhere on
+// the home screen; it follows the finger and settles like the native path.
+static NSArray<UIWindow *> *AllWindows(void) {
+    NSMutableArray *a = [NSMutableArray array];
+    for (UIScene *sc in UIApplication.sharedApplication.connectedScenes)
+        if ([sc isKindOfClass:UIWindowScene.class]) [a addObjectsFromArray:((UIWindowScene *)sc).windows];
+    return a;
+}
+
+@interface LQSJailedWindow : UIWindow
+@end
+@implementation LQSJailedWindow
+- (UIView *)hitTest:(CGPoint)p withEvent:(UIEvent *)e {
+    return self.hidden ? nil : [super hitTest:p withEvent:e];
+}
+@end
+
+@interface LQSJailedController : NSObject <LQSPanelDelegate, UIGestureRecognizerDelegate>
+@property (nonatomic, strong) LQSJailedWindow *window;
+@property (nonatomic, strong) LQSPanelViewController *panel;
+@property (nonatomic) CGFloat startProgress;
+@end
+
+static LQSJailedController *gJailed;
+
+@implementation LQSJailedController
+
+- (BOOL)ensurePanel:(UIWindow *)host {
+    if (self.panel) return YES;
+    NSString *root = ResourceRoot();
+    if (!root) { NLog(@"jailed: resources missing"); return NO; }
+    [LQSTheme setResourceRoot:root];
+    [LQSVectorIcon setResourceDirectory:[root stringByAppendingPathComponent:@"vectors"]];
+    LQSStringsSetDirectory([root stringByAppendingPathComponent:@"strings"]);
+    LQSJailedWindow *w = host.windowScene ? [[LQSJailedWindow alloc] initWithWindowScene:host.windowScene] : [[LQSJailedWindow alloc] initWithFrame:host.screen.bounds];
+    w.windowLevel = UIWindowLevelStatusBar + 10;
+    w.backgroundColor = UIColor.clearColor;
+    LQSPanelViewController *panel = [LQSPanelViewController new];
+    panel.delegate = self;
+    panel.ownBackdrop = YES;
+    w.rootViewController = panel;
+    w.hidden = YES;
+    [panel loadViewIfNeeded];
+    [panel setPresentationProgress:0 interactive:YES];
+    self.window = w;
+    self.panel = panel;
+    gPanel = panel;
+    NLog(@"jailed: panel window created %@", NSStringFromCGRect(w.frame));
+    return YES;
+}
+
+- (void)attachToWindow:(UIWindow *)w {
+    if (!w || [w isKindOfClass:LQSJailedWindow.class]) return;
+    for (UIGestureRecognizer *g in w.gestureRecognizers) if (g.delegate == self) return;
+    UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(pan:)];
+    pan.delegate = self;
+    pan.cancelsTouchesInView = YES;
+    [w addGestureRecognizer:pan];
+    NLog(@"jailed: swipe-down gesture on %@", NSStringFromClass(w.class));
+}
+
+- (BOOL)gestureRecognizerShouldBegin:(UIPanGestureRecognizer *)g {
+    if (!gEnabled || gDisabledHard) return NO;
+    if (self.window && !self.window.hidden) return NO;
+    // Only on the home screen, not over a running app.
+    Class home = objc_getClass("NXSBHome");
+    UIViewController *top = g.view.window.rootViewController;
+    while (top.presentedViewController) top = top.presentedViewController;
+    if (home && top && [NSStringFromClass(top.class) containsString:@"Switcher"]) return NO;
+    CGPoint v = [g velocityInView:g.view];
+    return v.y > 0 && v.y > fabs(v.x) * 1.5;
+}
+
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)g shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)o {
+    return NO;
+}
+
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)g shouldBeRequiredToFailByGestureRecognizer:(UIGestureRecognizer *)o {
+    // Win against home-screen scroll views for vertical pulls.
+    return [o.view isKindOfClass:UIScrollView.class];
+}
+
+- (void)pan:(UIPanGestureRecognizer *)g {
+    @try {
+        CGFloat h = MAX(1, g.view.bounds.size.height);
+        CGFloat t = [g translationInView:g.view].y, v = [g velocityInView:g.view].y;
+        switch (g.state) {
+            case UIGestureRecognizerStateBegan:
+                if (![self ensurePanel:g.view.window]) return;
+                self.panel.notificationsMode = NO;
+                self.window.hidden = NO;
+                [self.panel setPresentationProgress:0 interactive:YES];
+                break;
+            case UIGestureRecognizerStateChanged:
+                [self.panel setPresentationProgress:MAX(0, MIN(1, t / (h * 0.45))) interactive:YES];
+                break;
+            case UIGestureRecognizerStateEnded:
+            case UIGestureRecognizerStateCancelled:
+            case UIGestureRecognizerStateFailed: {
+                BOOL open = g.state == UIGestureRecognizerStateEnded && (v > 300 || (t > h * 0.15 && v > -300));
+                if (open) [self.panel setPresentationProgress:1 interactive:NO];
+                else [self panelRequestsDismiss:self.panel];
+                break;
+            }
+            default: break;
+        }
+    } @catch (NSException *e) {
+        HardDisable([NSString stringWithFormat:@"jailed gesture exception %@", e]);
+        self.window.hidden = YES;
+    }
+}
+
+- (void)present {
+    UIWindow *key = nil;
+    for (UIWindow *w in AllWindows()) if (w.isKeyWindow) key = w;
+    if (![self ensurePanel:key ?: AllWindows().firstObject]) return;
+    self.window.hidden = NO;
+    [self.panel setPresentationProgress:1 interactive:NO];
+}
+
+- (void)panelRequestsDismiss:(LQSPanelViewController *)panel {
+    if (!self.window || self.window.hidden) return;
+    [self.panel setPresentationProgress:0 interactive:NO];
+    LQSJailedWindow *w = self.window;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if (w.hidden) return;
+        // Hide only if nothing reopened it meanwhile.
+        if ([[self.panel valueForKey:@"_progress"] doubleValue] <= 0.001) w.hidden = YES;
+    });
+}
+
+@end
+
+static void JailedAttachAll(void) {
+    if (!gJailed) gJailed = [LQSJailedController new];
+    for (UIWindow *w in AllWindows()) [gJailed attachToWindow:w];
+}
+
+static void SetupJailed(void) {
+    // No Settings pane in the jailed ROM: enabled unless explicitly switched off.
+    id v = CFBridgingRelease(CFPreferencesCopyAppValue(CFSTR("enabled"), (__bridge CFStringRef)LQSPrefsDomain));
+    gEnabled = ![v respondsToSelector:@selector(boolValue)] || [v boolValue];
+    NLog(@"jailed SpringBoard detected (no Control Center): enabled=%d", gEnabled);
+    [[NSNotificationCenter defaultCenter] addObserverForName:UIWindowDidBecomeVisibleNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) { JailedAttachAll(); }];
+    [[NSNotificationCenter defaultCenter] addObserverForName:UIWindowDidBecomeKeyNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) { JailedAttachAll(); }];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 1 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ JailedAttachAll(); });
+}
+
+static BOOL IsJailedSpringBoard(void) {
+    return !objc_getClass("CCUIModularControlCenterOverlayViewController") && !objc_getClass("SBControlCenterController")
+        && !dlopen("/System/Library/PrivateFrameworks/ControlCenterUIKit.framework/ControlCenterUIKit", RTLD_NOLOAD);
+}
 
 static void DebugCommand(NSString *cmd) {
     if (![[NSFileManager defaultManager] fileExistsAtPath:kDebugFlagPath]) { NLog(@"debug %@ ignored (no DEBUG flag)", cmd); return; }
@@ -527,7 +695,17 @@ static void RegisterDarwin(NSString *name, void (^block)(void)) {
 
         gEnabled = [LQSSettings current].enabled;
         NLog(@"loaded: enabled=%d iOS=%@", gEnabled, UIDevice.currentDevice.systemVersion);
-        %init;
+        if (IsJailedSpringBoard() || objc_getClass("NXSBHome")) {
+            SetupJailed();
+            RegisterDarwin(LQSPrefsChangedNotification, ^{
+                id v = CFBridgingRelease(CFPreferencesCopyAppValue(CFSTR("enabled"), (__bridge CFStringRef)LQSPrefsDomain));
+                gEnabled = ![v respondsToSelector:@selector(boolValue)] || [v boolValue];
+                if (!gEnabled) [gJailed panelRequestsDismiss:gJailed.panel];
+            });
+            RegisterDarwin(@"com.makr.lineageqs/debug-present", ^{ [gJailed present]; });
+            return;
+        }
+        %init(Native);
         ReloadGesturePrefs();
 
         RegisterDarwin(LQSPrefsChangedNotification, ^{ ReloadPrefs(); });
