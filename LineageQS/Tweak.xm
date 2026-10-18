@@ -17,6 +17,7 @@
 #import <objc/message.h>
 #import <notify.h>
 #import <dlfcn.h>
+#import <string.h>
 #import "Sources/LQSPanelViewController.h"
 #import "Sources/LQSModel.h"
 #import "Sources/LQSTheme.h"
@@ -573,7 +574,78 @@ static BOOL RouteTopGesture(UIPanGestureRecognizer *g, UIGestureRecognizerState 
     return YES;
 }
 
+static char kTopGrabberVisualEdge;
+
+static void CaptureTopGrabberVisualEdge(SBGrabberTongue *tongue, UIPanGestureRecognizer *g) {
+    if (!gTopSwipe || g.state != UIGestureRecognizerStateBegan) return;
+    Class primary = objc_getClass("SBCoverSheetPrimarySlidingViewController");
+    if (!primary || ![IvarValue(tongue, "_delegate") isKindOfClass:primary]) return;
+    UIView *host = IvarValue(tongue, "_containingView");
+    if (![host isKindOfClass:UIView.class]) return;
+    UIInterfaceOrientation orientation = host.window.windowScene.interfaceOrientation;
+    SEL touchOrientation = NSSelectorFromString(@"_touchInterfaceOrientation");
+    if ([g respondsToSelector:touchOrientation]) {
+        UIInterfaceOrientation touch = ((UIInterfaceOrientation (*)(id, SEL))objc_msgSend)(g, touchOrientation);
+        if (touch != UIInterfaceOrientationUnknown) orientation = touch;
+    }
+    if (!UIInterfaceOrientationIsLandscape(orientation)) {
+        objc_setAssociatedObject(tongue, &kTopGrabberVisualEdge, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        return;
+    }
+    UIRectEdge edge = UIRectEdgeTop;
+    // CoverSheet's host can remain portrait-aligned over a landscape app.
+    // Locate the physical top pull in that host, rather than assuming its
+    // local top is also the screen top. Cache for the native hide animation.
+    CGPoint p = [g locationInView:host], delta = [g translationInView:host];
+    p = CGPointMake(p.x - delta.x, p.y - delta.y);
+    CGRect b = host.bounds;
+    CGFloat best = fabs(p.y - CGRectGetMinY(b));
+    CGFloat left = fabs(p.x - CGRectGetMinX(b)), right = fabs(p.x - CGRectGetMaxX(b));
+    if (left < best) { best = left; edge = UIRectEdgeLeft; }
+    if (right < best) edge = UIRectEdgeRight;
+    objc_setAssociatedObject(tongue, &kTopGrabberVisualEdge, @(edge), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+// Reuse native geometry for the corrected visual edge only. Never change the
+// recognizer's edge or the grabber's first/second-swipe policy. Restore even if
+// a native calculation throws; nested visual calculations see the same edge.
+static void WithTopGrabberVisualEdge(SBGrabberTongue *tongue, void (^calculate)(void)) {
+    NSNumber *edge = gTopSwipe ? objc_getAssociatedObject(tongue, &kTopGrabberVisualEdge) : nil;
+    Ivar iv = edge ? class_getInstanceVariable(object_getClass(tongue), "_screenEdge") : NULL;
+    if (!iv || strcmp(ivar_getTypeEncoding(iv), @encode(NSUInteger)) != 0) { calculate(); return; }
+    NSUInteger saved, visual = edge.unsignedIntegerValue;
+    uint8_t *slot = (uint8_t *)(__bridge void *)tongue + ivar_getOffset(iv);
+    memcpy(&saved, slot, sizeof(saved));
+    if (saved == visual) { calculate(); return; }
+    memcpy(slot, &visual, sizeof(visual));
+    @try { calculate(); }
+    @finally { memcpy(slot, &saved, sizeof(saved)); }
+}
+
 %hook SBGrabberTongue
+- (void)_handlePullGesture:(UIPanGestureRecognizer *)g {
+    if ([g isKindOfClass:UIPanGestureRecognizer.class]) CaptureTopGrabberVisualEdge(self, g);
+    %orig;
+}
+
+- (CGRect)_frameForTongueWhenVisible:(BOOL)visible {
+    __block CGRect frame;
+    WithTopGrabberVisualEdge(self, ^{ frame = %orig; });
+    return frame;
+}
+
+- (CGAffineTransform)_transformForTongueContainer {
+    __block CGAffineTransform transform;
+    WithTopGrabberVisualEdge(self, ^{ transform = %orig; });
+    return transform;
+}
+
+- (CGRect)_chevronFrameForTongueBounds:(CGRect)bounds {
+    __block CGRect frame;
+    WithTopGrabberVisualEdge(self, ^{ frame = %orig; });
+    return frame;
+}
+
 - (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)g {
     BOOL r = %orig;
     if (r && !gBottomSwipe) {
