@@ -33,8 +33,7 @@
 @end
 @interface SBGrabberTongue : NSObject
 @end
-@interface SBCoverSheetSlidingViewController : UIViewController
-- (BOOL)_isPresentingInterstitialForGestureRecognizer:(UIGestureRecognizer *)gesture;
+@interface SBCoverSheetPrimarySlidingViewController : UIViewController
 @end
 @interface SBControlCenterController : NSObject
 + (instancetype)sharedInstanceIfExists;
@@ -535,10 +534,9 @@ static void MirrorForOverlay(UIPanGestureRecognizer *g, CGPoint *loc, CGPoint *t
     *vel = CGPointMake(ve.x, -ve.y);
 }
 
-static BOOL RouteTopGesture(UIPanGestureRecognizer *g) {
+static BOOL RouteTopGesture(UIPanGestureRecognizer *g, UIGestureRecognizerState st) {
     SBControlCenterController *cc = [objc_getClass("SBControlCenterController") sharedInstanceIfExists];
     CCUIModularControlCenterOverlayViewController *ov = CurrentOverlay();
-    UIGestureRecognizerState st = g.state;
     CGPoint loc, tr, vel;
     MirrorForOverlay(g, &loc, &tr, &vel);
     @try {
@@ -580,47 +578,43 @@ static BOOL RouteTopGesture(UIPanGestureRecognizer *g) {
 %end
 
 
-%hook SBCoverSheetSlidingViewController
-- (void)_handlePresentGesture:(UIPanGestureRecognizer *)g {
-    if (g.state == UIGestureRecognizerStateBegan) {
-        gRoutedGesture = nil;
-        // Status-bar activity taps can use this path too. Only claim real
-        // downward pans; a tap on the red recording pill belongs to iOS.
-        if (![g isKindOfClass:UIPanGestureRecognizer.class]) { %orig; return; }
-        // Let CoverSheet own the entire first, edge-protected swipe. It shows
-        // the native grabber and manages its lifetime; only the subsequent
-        // non-interstitial gesture may be routed to our Control Center.
-        if ([self respondsToSelector:@selector(_isPresentingInterstitialForGestureRecognizer:)] &&
-            [self _isPresentingInterstitialForGestureRecognizer:g]) { %orig; return; }
-        CGPoint location, translation, velocity;
-        MirrorForOverlay(g, &location, &translation, &velocity);
-        CGFloat down = -translation.y, downVelocity = -velocity.y;
-        if (down <= 0 && downVelocity <= 0) { %orig; return; }
-        if ([LQSBackends stateFor:@"screenrecord"] == LQSBackendStateOn &&
-            down < 4 && downVelocity < 40) { %orig; return; }
-        CGPoint p = [g locationInView:g.view];
-        CGFloat interfaceWidth = g.view.window.windowScene.coordinateSpace.bounds.size.width;
-        if (interfaceWidth <= 0) interfaceWidth = g.view.bounds.size.width;
-        BOOL leftHalf = location.x < interfaceWidth * 0.5; // config_invocationGestureSplitRatio
-        NLog(@"cover sheet present gesture began in %@ at (%.0f,%.0f) topSwipe=%d split=%d left=%d", NSStringFromClass(self.class), p.x, p.y, gTopSwipe, gTopSplit, leftHalf);
-        // Android dual shade: left half = notifications shade (ours when notifShade=YES,
-        // otherwise iOS Notification Center), right half (or no split) = quick settings.
-        BOOL ownNotifs = PrefB(@"notifShade", YES);
-        if (gTopSwipe && [g isKindOfClass:UIPanGestureRecognizer.class] && !(gTopSplit && leftHalf && !ownNotifs)) {
-            gRoutedGesture = g;
-            gPanel.notificationsMode = gTopSplit && leftHalf;
-        }
-    }
-    if (gRoutedGesture && gRoutedGesture == g) {
-        if (!RouteTopGesture(g)) {
-            gRoutedGesture = nil;
-            %orig;
-            return;
-        }
-        if (g.state >= UIGestureRecognizerStateEnded) gRoutedGesture = nil;
-        return; // cover sheet is not moved for a routed gesture
-    }
-    %orig;
+%hook SBCoverSheetPrimarySlidingViewController
+// SBGrabberTongue owns recognition and the first-swipe arrow. Route only the
+// actual pull callbacks it emits after native edge protection has accepted it.
+- (void)grabberTongueBeganPulling:(id)tongue withDistance:(double)distance andVelocity:(double)speed andGesture:(UIPanGestureRecognizer *)g {
+    gRoutedGesture = nil;
+    if (!gTopSwipe || ![g isKindOfClass:UIPanGestureRecognizer.class]) { %orig; return; }
+    CGPoint location, translation, velocity;
+    MirrorForOverlay(g, &location, &translation, &velocity);
+    CGFloat down = -translation.y, downVelocity = -velocity.y;
+    if (down <= 0 && downVelocity <= 0) { %orig; return; }
+    if ([LQSBackends stateFor:@"screenrecord"] == LQSBackendStateOn &&
+        down < 4 && downVelocity < 40) { %orig; return; }
+    CGFloat interfaceWidth = g.view.window.windowScene.coordinateSpace.bounds.size.width;
+    if (interfaceWidth <= 0) interfaceWidth = g.view.bounds.size.width;
+    BOOL leftHalf = location.x < interfaceWidth * 0.5;
+    if (gTopSplit && leftHalf && !PrefB(@"notifShade", YES)) { %orig; return; }
+    gPanel.notificationsMode = gTopSplit && leftHalf;
+    if (!RouteTopGesture(g, UIGestureRecognizerStateBegan)) { %orig; return; }
+    gRoutedGesture = g;
+    NLog(@"native grabber accepted top pull, split=%d left=%d", gTopSplit, leftHalf);
+}
+
+- (void)grabberTongueUpdatedPulling:(id)tongue withDistance:(double)distance andVelocity:(double)speed andGesture:(UIPanGestureRecognizer *)g {
+    if (gRoutedGesture != g || !g) { %orig; return; }
+    RouteTopGesture(g, UIGestureRecognizerStateChanged);
+}
+
+- (void)grabberTongueEndedPulling:(id)tongue withDistance:(double)distance andVelocity:(double)speed andGesture:(UIPanGestureRecognizer *)g {
+    if (gRoutedGesture != g || !g) { %orig; return; }
+    RouteTopGesture(g, UIGestureRecognizerStateEnded);
+    gRoutedGesture = nil;
+}
+
+- (void)grabberTongueCanceledPulling:(id)tongue withDistance:(double)distance andVelocity:(double)speed andGesture:(UIPanGestureRecognizer *)g {
+    if (gRoutedGesture != g || !g) { %orig; return; }
+    RouteTopGesture(g, UIGestureRecognizerStateCancelled);
+    gRoutedGesture = nil;
 }
 %end
 
