@@ -60,8 +60,22 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
 @interface LQSPanelViewController () <UIGestureRecognizerDelegate>
 @end
 
+// Drawing needs enough vertical room for whole tiles throughout expansion.
+// Hit-testing still stops at the current grid, so notifications/media below
+// compact QS keep receiving touches. Horizontal paging stays clipped.
+@interface LQSGridViewport : UIView
+@property (nonatomic) CGFloat interactionHeight;
+@end
+
+@implementation LQSGridViewport
+- (BOOL)pointInside:(CGPoint)point withEvent:(UIEvent *)event {
+    return point.y <= self.interactionHeight && [super pointInside:point withEvent:event];
+}
+@end
+
 @implementation LQSPanelViewController {
-    UIView *_backdrop, *_panelColor, *_notificationSurface, *_content, *_gridClip, *_footer, *_actions;
+    UIView *_backdrop, *_panelColor, *_notificationSurface, *_content, *_footer, *_actions;
+    LQSGridViewport *_gridClip;
     UIVisualEffectView *_blur;
     LQSHeaderView *_header;
     LQSBrightnessView *_brightness;
@@ -90,7 +104,6 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
     NSInteger _listMode;    // drag in the notification list: 0 scroll, 1 expands QS, 2 closes the shade
     BOOL _listDecided;      // the mode is chosen once, on the first movement of the drag
     CGFloat _listModeY;
-    CALayer *_revealMask;
     LQSEditor *_editor;
     LQSMediaCard *_media;
 }
@@ -185,7 +198,7 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
     _brightness.onDragChanged = ^(BOOL d) { [weakSelf mirror:d]; };
     [_content addSubview:_brightness];
 
-    _gridClip = [UIView new];
+    _gridClip = [LQSGridViewport new];
     _gridClip.clipsToBounds = YES;
     [_content addSubview:_gridClip];
 
@@ -581,10 +594,6 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
     _content.bounds = CGRectMake(0, 0, b.size.width, b.size.height);
     _content.center = CGPointMake(CGRectGetMidX(b), CGRectGetMidY(b));
     CGFloat q = _q, p = MAX(0, MIN(1, _progress));
-    [CATransaction begin];
-    [CATransaction setDisableActions:YES];
-    _revealMask.frame = CGRectMake(0, 0, b.size.width, p >= 0.999 ? b.size.height : b.size.height * p);
-    [CATransaction commit];
     _header.frame = CGRectMake(0, 0, w, [_header expandedHeight]);
     _header.expansion = gLandscape ? 0 : q; // landscape keeps the one-row header
 
@@ -593,12 +602,14 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
     _brightness.alpha = Range(q, 0.43, 0.95);
     _brightness.userInteractionEnabled = q > 0.95;
 
-    // Grid clip: QQS rows -> full page, positions interpolate (shared tile elements).
+    // Keep the drawing viewport full-height. Interpolating its clipping edge
+    // between row counts slices through QS-only tiles as they fade in.
     CGFloat squish = (q > 0) ? 1 : 0.1 + 0.9 * p; // constrainSquishiness(0.1 + 0.9x)
     NSInteger qqsRows = MIN(kQQSRows, [self usedRowsOnFirstPage]);
     CGFloat qqsH = [self gridHeightRows:qqsRows squish:squish], qsH = [self gridHeightRows:kRowsPerPage squish:1];
     CGFloat top = Lerp([self qqsTop], [self qsGridTop], q);
-    _gridClip.frame = CGRectMake(0, top, w, Lerp(qqsH, qsH, q) + kBounce);
+    _gridClip.frame = CGRectMake(0, top, w, MAX(0, b.size.height - top));
+    _gridClip.interactionHeight = Lerp(qqsH, qsH, q) + kBounce;
     [self layoutTilesOnly];
 
     CGFloat qsGridBottom = [self qsGridTop] + qsH;
@@ -656,11 +667,17 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
         CGFloat yQQS = qqsTop + c.row * (rowH + gap);
         // QS-only tiles ride with the grid (they belong to the same expanding QS panel).
         CGFloat y = inQQS ? Lerp(yQQS, yQS, q) : Lerp(qqsTop, qsTop, q) + c.row * ([self tileHeight] + gap);
-        t.squish = inQQS ? squish : 1;
         CGFloat height = inQQS ? Lerp(rowH, [self tileHeight], q) : [self tileHeight];
         // Small tiles stay square at rest on both narrow and wide displays.
         CGFloat tileWidth = c.span == 1 ? MIN(width, [self tileHeight]) : width;
-        t.frame = CGRectMake(x + (width - tileWidth) / 2, y - clipTop, tileWidth, height);
+        // Squish the whole tile, including its icon/labels, instead of shrinking
+        // the body's clipping bounds around full-size content. Use bounds and
+        // center because frame is undefined with a nonidentity transform.
+        CGFloat fullHeight = [self tileHeight];
+        t.squish = 1;
+        t.bounds = CGRectMake(0, 0, tileWidth, fullHeight);
+        t.center = CGPointMake(x + width / 2, y - clipTop + height / 2);
+        t.transform = CGAffineTransformMakeScale(1, height / MAX(1, fullHeight));
         // QS-only tiles fade in over [0.43, 0.95] (FromShadeToQuickSettingsTransition).
         t.alpha = inQQS ? 1 : Range(q, 0.43, 0.95);
         t.userInteractionEnabled = inQQS ? (q < 0.05 || q > 0.95) : q > 0.95;
@@ -793,20 +810,10 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
         [self.delegate panel:self didChangePresentationProgress:p];
     // Panel background follows the expansion linearly (ScrimController behindAlpha * panelFraction).
     _backdrop.alpha = p;
-    // Content: revealed from the top by the panel edge, content alpha getContentAlpha,
-    // parallax -0.175 * H while opening (QS_PARALLAX_AMOUNT).
-    if (!_revealMask) {
-        _revealMask = [CALayer layer];
-        _revealMask.backgroundColor = UIColor.blackColor.CGColor;
-        // Reveal content only. The dark surfaces are full-height siblings,
-        // never clipped to the moving reveal edge.
-        _content.layer.mask = _revealMask;
-    }
-    CGFloat h = self.view.bounds.size.height;
-    [CATransaction begin];
-    [CATransaction setDisableActions:YES];
-    _revealMask.frame = CGRectMake(0, 0, self.view.bounds.size.width, p >= 0.999 ? h : h * p);
-    [CATransaction commit];
+    // The native presenter already reveals the shade. A second height mask
+    // here cuts straight through quick tiles during opening and closing.
+    // Keep the existing alpha/parallax and hide content at the closed endpoint.
+    _content.hidden = p <= 0.001;
     _content.alpha = ContentAlpha(p);
     _content.transform = CGAffineTransformMakeTranslation(0, -0.175 * (1 - p) * [self qqsBottom]);
     if (p <= 0.001 && _editor) { [_editor removeFromSuperview]; _editor = nil; _state = LQSPanelStateExpanded; [self rebuildTiles]; }
