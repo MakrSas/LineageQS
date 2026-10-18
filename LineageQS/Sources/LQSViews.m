@@ -40,7 +40,7 @@ typedef struct {
 @implementation LQSTileView {
     UIView *_body, *_overlay, *_bubble, *_textBox;
     UIImageView *_icon;
-    UILabel *_title, *_state;
+    UILabel *_title, *_state, *_iconTextLabel;
     CAGradientLayer *_titleFade, *_stateFade;
     CADisplayLink *_iconLink;
     CFTimeInterval _iconStart;
@@ -77,6 +77,11 @@ typedef struct {
         _icon = [UIImageView new];
         _icon.contentMode = UIViewContentModeCenter;
         [_body addSubview:_icon];
+        _iconTextLabel = [UILabel new];
+        _iconTextLabel.font = [UIFont monospacedDigitSystemFontOfSize:22 weight:UIFontWeightSemibold];
+        _iconTextLabel.textAlignment = NSTextAlignmentCenter;
+        _iconTextLabel.userInteractionEnabled = NO;
+        [_body addSubview:_iconTextLabel];
         _textBox = [UIView new];
         _textBox.userInteractionEnabled = NO;
         [_body addSubview:_textBox];
@@ -133,7 +138,8 @@ typedef struct {
     NSString *text = [self currentStateText];
     void (^shape)(void) = ^{
         self->_body.backgroundColor = self->_cBg;
-        self->_body.layer.cornerRadius = MIN(radius, self.bounds.size.height / 2);
+        self->_body.layer.cornerRadius = active ? MIN(radius, self.bounds.size.height / 2)
+            : MIN(radius, MIN(self.bounds.size.width, self.bounds.size.height) / 2);
         [self viewWithTag:77].layer.cornerRadius = self->_body.layer.cornerRadius;
         self->_bubble.backgroundColor = self->_cIconBg;
         self->_bubble.layer.cornerRadius = bubbleRadius;
@@ -160,6 +166,7 @@ typedef struct {
     }
     _overlay.backgroundColor = [[LQSTheme onSurface] colorWithAlphaComponent:0.15];
     _title.text = self.spec.title;
+    _iconTextLabel.textColor = _cIcon;
     self.accessibilityLabel = self.spec.title;
     self.accessibilityValue = text.length ? text : nil;
     [self setNeedsLayout];
@@ -204,6 +211,14 @@ typedef struct {
     _iconOverride = [name copy];
     if (!_iconLink) _icon.image = [LQSVectorIcon imageNamed:[self currentIconName] side:[self iconSide]];
 }
+- (void)setIconText:(NSString *)text {
+    _iconText = [text copy];
+    _iconTextLabel.text = text;
+    _iconTextLabel.textColor = _cIcon;
+    _iconTextLabel.hidden = !text.length;
+    _icon.hidden = text.length > 0;
+    [self setNeedsLayout];
+}
 - (void)setSquish:(CGFloat)s { _squish = MAX(0.1, MIN(1, s)); }
 
 - (void)setStateText:(NSString *)t {
@@ -243,9 +258,10 @@ static void Fade(UILabel *l, CAGradientLayer *__strong *mask) {
     _overlay.frame = _body.bounds;
     UIView *fx = [self viewWithTag:77];
     fx.frame = self.bounds;
-    fx.layer.cornerRadius = _body.layer.cornerRadius;
     BOOL active = self.on && !self.unavailable;
-    _body.layer.cornerRadius = MIN(active ? [LQSTheme radiusActive] : [LQSTheme radiusInactive], h / 2);
+    _body.layer.cornerRadius = active ? MIN([LQSTheme radiusActive], h / 2)
+        : MIN([LQSTheme radiusInactive], MIN(w, h) / 2);
+    fx.layer.cornerRadius = _body.layer.cornerRadius;
     CGFloat full = [LQSTheme tileHeight]; // content keeps its size and stays centred while squished
     if (self.size == LQSTileSizeSmall) {
         _bubble.hidden = YES;
@@ -255,8 +271,9 @@ static void Fade(UILabel *l, CAGradientLayer *__strong *mask) {
     } else {
         _bubble.hidden = NO;
         _textBox.hidden = NO;
-        CGFloat t = [LQSTheme toggleTarget], pad = 8; // StartPadding 8dp, ToggleTargetSize 56dp
+        CGFloat t = MIN([LQSTheme toggleTarget], MAX(0, h / MAX(0.1, self.squish) - 16)), pad = 8;
         _bubble.frame = CGRectMake(pad, (h - t * self.squish) / 2, t, t * self.squish);
+        _bubble.layer.cornerRadius = active ? [LQSTheme iconRadiusActive] : MIN(t, t * self.squish) / 2;
         _icon.bounds = CGRectMake(0, 0, [LQSTheme largeIconSide], [LQSTheme largeIconSide]);
         _icon.center = CGPointMake(pad + t / 2, h / 2);
         CGFloat x = pad + t + 6, end = 12; // TileArrangementPadding 6dp, TileEndPadding 12dp
@@ -270,6 +287,7 @@ static void Fade(UILabel *l, CAGradientLayer *__strong *mask) {
         Fade(_title, &_titleFade);
         Fade(_state, &_stateFade);
     }
+    _iconTextLabel.frame = _icon.frame;
     (void)full;
 }
 
@@ -673,6 +691,19 @@ static NSString *DataTypeIcon(NSString *t) {
 
 - (void)clockTapped { if (self.onClockTap) self.onClockTap(); }
 - (void)dateTapped { if (self.onDateTap) self.onDateTap(); }
+
+- (void)setRecording:(BOOL)recording {
+    _recording = recording;
+    _clock.backgroundColor = recording ? UIColor.systemRedColor : UIColor.clearColor;
+    _clock.layer.cornerRadius = 6;
+    _clock.clipsToBounds = YES;
+    _clock.textColor = recording ? UIColor.whiteColor : [LQSTheme headerText];
+    _bigClock.textColor = recording ? UIColor.systemRedColor : [LQSTheme headerText];
+    for (UILabel *clock in @[_clock, _bigClock]) {
+        clock.accessibilityTraits = UIAccessibilityTraitButton;
+        clock.accessibilityHint = recording ? LQSL(@"Stop recording") : nil;
+    }
+}
 
 - (CGFloat)collapsedHeight { return 48; } // qqsHeaderHeight: 48dp touch row (assumption for the iPhone 8 20pt status bar)
 - (CGFloat)expandedHeight { return 120; } // ExpandedHeight

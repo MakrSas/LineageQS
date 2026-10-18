@@ -1,4 +1,4 @@
-#!/bin/zsh
+#!/usr/bin/env bash
 # Theos rejects paths with spaces: build in ~/.lineageqs-build, copy the .deb back.
 set -e
 export THEOS=${THEOS:-$HOME/theos}
@@ -10,6 +10,7 @@ rsync -a --delete --exclude .theos --exclude packages "$SRC/" "$BUILD/"
 mkdir -p "$BUILD/layout/Library/Application Support/LineageQS"
 rsync -a --delete "$RES/vectors" "$RES/fonts" "$RES/strings" "$RES/colors.json" "$RES/battery_glyphs.json" "$RES/monet_table.bin" "$RES/monet_tokens.txt" "$BUILD/layout/Library/Application Support/LineageQS/"
 cd "$BUILD"
+chmod 755 layout/DEBIAN/postinst layout/DEBIAN/postrm
 rm -rf packages; make clean package FINALPACKAGE=1
 mkdir -p "$SRC/packages"
 cp packages/*.deb "$SRC/packages/"

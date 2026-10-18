@@ -9,6 +9,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy, nullable) void (^requestDismiss)(void);
 @property (nonatomic, copy, nullable) void (^openSettingsURL)(NSString *url);
 @property (nonatomic, readonly) UIScrollView *scrollView;
+@property (nonatomic) BOOL showsBackground; // NO when the panel draws a full-height surface
 - (void)reload;
 - (CGFloat)contentHeight;
 @end

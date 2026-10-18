@@ -1,4 +1,5 @@
 #import "LQSNotifications.h"
+#import "LQSStrings.h"
 #import <objc/runtime.h>
 #import <objc/message.h>
 
@@ -19,6 +20,41 @@ static id V(id obj, NSString *sel) {
 
 static NSString *Str(id v) { return [v isKindOfClass:NSString.class] && [v length] ? v : nil; }
 
+static NSString *AppName(NSString *bundleID, id content) {
+    NSString *header = Str(V(content, @"header"));
+    if (header && ![header isEqualToString:bundleID]) return header;
+    static NSCache *names;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ names = [NSCache new]; names.countLimit = 128; });
+    NSString *key = [NSString stringWithFormat:@"%@/%@", NSLocale.preferredLanguages.firstObject, bundleID];
+    NSString *cached = [names objectForKey:key];
+    if (cached) return cached;
+    NSString *name = nil;
+    @try {
+        Class controller = NSClassFromString(@"SBApplicationController");
+        id applications = V(controller, @"sharedInstance");
+        SEL lookup = NSSelectorFromString(@"applicationWithBundleIdentifier:");
+        if ([applications respondsToSelector:lookup]) {
+            id app = ((id (*)(id, SEL, id))objc_msgSend)(applications, lookup, bundleID);
+            name = Str(V(app, @"displayName"));
+        }
+        if (!name) {
+            Class proxyClass = NSClassFromString(@"LSApplicationProxy");
+            lookup = NSSelectorFromString(@"applicationProxyForIdentifier:");
+            if ([proxyClass respondsToSelector:lookup]) {
+                id proxy = ((id (*)(id, SEL, id))objc_msgSend)(proxyClass, lookup, bundleID);
+                name = Str(V(proxy, @"localizedName"));
+            }
+        }
+    } @catch (NSException *exception) {
+        // A missing/removed application must not discard its notification.
+    }
+    if (name.length && ![name isEqualToString:bundleID]) { [names setObject:name forKey:key]; return name; }
+    // System notification sections need not correspond to an installed app.
+    // Never leak a raw package identifier into the user-facing header.
+    return LQSL(@"Notifications");
+}
+
 @interface LQSNotificationItem ()
 @property (nonatomic, strong, readwrite) id request;
 @property (nonatomic, copy, readwrite) NSString *identifier, *bundleID;
@@ -37,7 +73,7 @@ static NSString *Str(id v) { return [v isKindOfClass:NSString.class] && [v lengt
     id ts = V(req, @"timestamp");
     it.date = [ts isKindOfClass:NSDate.class] ? ts : nil;
     id c = V(req, @"content");
-    it.appName = Str(V(c, @"header"));
+    it.appName = AppName(it.bundleID, c);
     it.title = Str(V(c, @"title"));
     it.subtitle = Str(V(c, @"subtitle"));
     it.message = Str(V(c, @"message"));

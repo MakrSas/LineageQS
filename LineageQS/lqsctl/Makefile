@@ -1,5 +1,6 @@
 export THEOS_PACKAGE_SCHEME = rootless
-ARCHS = arm64 arm64e
+# CLI processes use the stable arm64 ABI, including on arm64e devices.
+ARCHS = arm64
 include $(THEOS)/makefiles/common.mk
 TOOL_NAME = lqsctl
 lqsctl_FILES = main.m

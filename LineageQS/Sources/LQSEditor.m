@@ -356,6 +356,7 @@ static UIViewPropertyAnimator *DefaultSpring(void) {
 #pragma mark - Layout
 
 - (CGFloat)cellWidth { return (self.bounds.size.width - 2 * kSide - 2 * kGridPad - (kColumns - 1) * kGap) / kColumns; }
+- (CGFloat)tileHeight { return MIN(kTileH, [self cellWidth]); }
 
 typedef struct { NSInteger row, col, span; } LQSEditCell;
 
@@ -375,7 +376,10 @@ typedef struct { NSInteger row, col, span; } LQSEditCell;
 
 - (CGRect)frameForCell:(LQSEditCell)c {
     CGFloat cw = [self cellWidth];
-    return CGRectMake(kGridPad + c.col * (cw + kGap), kGridPad + c.row * (kTileH + kGap), c.span * cw + (c.span - 1) * kGap, kTileH);
+    CGFloat h = [self tileHeight];
+    CGFloat width = c.span * cw + (c.span - 1) * kGap;
+    CGFloat tileWidth = c.span == 1 ? h : width;
+    return CGRectMake(kGridPad + c.col * (cw + kGap) + (width - tileWidth) / 2, kGridPad + c.row * (h + kGap), tileWidth, h);
 }
 
 - (void)layoutSubviews {
@@ -401,7 +405,7 @@ typedef struct { NSInteger row, col, span; } LQSEditCell;
 
     NSInteger rows = 1;
     NSArray *cells = [self cellsFor:_entries rows:&rows];
-    CGFloat gridH = rows * kTileH + (rows - 1) * kGap + 2 * kGridPad;
+    CGFloat gridH = rows * [self tileHeight] + (rows - 1) * kGap + 2 * kGridPad;
     _grid.frame = CGRectMake(kSide, y, w - 2 * kSide, gridH);
     _gridBorder.frame = _grid.bounds;
     _gridBorder.path = [UIBezierPath bezierPathWithRoundedRect:CGRectInset(_grid.bounds, 1, 1) cornerRadius:27].CGPath;
@@ -428,8 +432,9 @@ typedef struct { NSInteger row, col, span; } LQSEditCell;
             CGFloat ch = kTileH + 8 + MIN(32, ceil(ls.height));
             c.frame = CGRectMake(kGroupPad + col * (acw + kGap), gy, acw, ch);
             UIView *bg = [c viewWithTag:1];
-            bg.frame = CGRectMake(0, 0, acw, kTileH);
-            bg.layer.cornerRadius = MIN(36, acw / 2);
+            CGFloat side = MIN(acw, kTileH);
+            bg.frame = CGRectMake((acw - side) / 2, (kTileH - side) / 2, side, side);
+            bg.layer.cornerRadius = side / 2;
             [c viewWithTag:2].frame = bg.frame;
             l.frame = CGRectMake(0, kTileH + 8, acw, ch - kTileH - 8);
             UIView *badge = [c viewWithTag:4];

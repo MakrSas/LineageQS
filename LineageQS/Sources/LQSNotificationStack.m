@@ -95,7 +95,7 @@ static void SwipeHaptic(BOOL strong) {
         _header = [UILabel new];
         _header.font = [LQSNotifRow headerFont];
         _header.textColor = [LQSTheme onSurfaceVariant];
-        _header.text = [NSString stringWithFormat:@"%@ • %@", it.appName ?: it.bundleID, RelativeTime(it.date)];
+        _header.text = [NSString stringWithFormat:@"%@ • %@", it.appName ?: LQSL(@"Notifications"), RelativeTime(it.date)];
         [self addSubview:_header];
         if (items.count > 1) {
             _pill = [UIView new];
@@ -294,6 +294,7 @@ static void SwipeHaptic(BOOL strong) {
 
 - (instancetype)initWithFrame:(CGRect)f {
     if ((self = [super initWithFrame:f])) {
+        _showsBackground = YES;
         // ShadeColors.classicShadeNotificationScrimBg: customColorSurfaceEffect0 (monet opacity
         // 0.5, CustomDynamicColors.java:344-351) over the shade panel; rounded top (28dp, assumption).
         _scrimBg = [UIView new];
@@ -416,7 +417,7 @@ static void SwipeHaptic(BOOL strong) {
         y += 40 + 32; // notification_panel_margin_bottom 32dp
     }
     _scroll.contentSize = CGSizeMake(self.bounds.size.width, y);
-    _scrimBg.hidden = NO; // the scrim spans the whole stack, including the empty-shade text
+    _scrimBg.hidden = !self.showsBackground;
     _scrimBg.frame = CGRectMake(0, 0, self.bounds.size.width, MAX(y, self.bounds.size.height) + 800); // 16dp above the first row
     [_scroll sendSubviewToBack:_scrimBg];
 }

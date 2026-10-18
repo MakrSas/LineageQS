@@ -91,6 +91,8 @@ static id Recorder(void) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
         LoadFramework("/System/Library/Frameworks/ReplayKit.framework/ReplayKit");
+        // RPControlCenterClient lives in the CC bundle, not ReplayKit.framework.
+        LoadFramework("/System/Library/ControlCenter/Bundles/ReplayKitModule.bundle/ReplayKitModule");
         Class c = NSClassFromString(@"RPControlCenterClient");
         if ([c respondsToSelector:NSSelectorFromString(@"sharedInstance")]) client = ((id (*)(id, SEL))objc_msgSend)(c, NSSelectorFromString(@"sharedInstance"));
         else client = c ? [c new] : nil;
@@ -102,7 +104,12 @@ static id Recorder(void) {
 // CoreDuet _CDBatterySaver class is absent on this device.
 static id BatterySaver(void) {
     LoadFramework("/System/Library/PrivateFrameworks/LowPowerMode.framework/LowPowerMode");
-    return Shared(@"_PMLowPowerMode", @"sharedInstance");
+    id client = Shared(@"_PMLowPowerMode", @"sharedInstance");
+    if (!client) {
+        LoadFramework("/System/Library/PrivateFrameworks/CoreDuet.framework/CoreDuet");
+        client = Shared(@"_CDBatterySaver", @"batterySaver"); // iOS 15 fallback
+    }
+    return client;
 }
 
 // Cellular data: CoreTelephony C API used by the stock CC connectivity module.
@@ -238,7 +245,105 @@ static NSString *LaunchBundleFor(NSString *ident) {
     return map[ident];
 }
 
+// Main-thread state shared by tiles and detail dialogs. Keep the requested
+// state until hardware acknowledges it, or roll back after a bounded timeout.
+static NSMutableDictionary<NSString *, NSDictionary *> *gPending;
+static NSTimer *gPendingTimer, *gCountdownTimer;
+static NSTimeInterval gCountdownDeadline;
+static BOOL gRecordingStateKnown, gRecordingOn;
+
 @implementation LQSBackends
+
++ (void)prepare { Recorder(); }
+
++ (void)postChanged {
+    [[NSNotificationCenter defaultCenter] postNotificationName:LQSBackendsChangedNotification object:nil];
+}
+
++ (void)recordingStateChanged:(BOOL)recording {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        BOOL stopped = gRecordingStateKnown && gRecordingOn && !recording;
+        gRecordingStateKnown = YES;
+        gRecordingOn = recording;
+        NSDictionary *pending = gPending[@"screenrecord"];
+        if (stopped || (pending && [pending[@"on"] boolValue] == recording)) [gPending removeObjectForKey:@"screenrecord"];
+        if (recording) { [gCountdownTimer invalidate]; gCountdownTimer = nil; gCountdownDeadline = 0; }
+        [self postChanged];
+    });
+}
+
++ (NSInteger)recordingCountdown {
+    return MAX(0, (NSInteger)ceil(gCountdownDeadline - NSProcessInfo.processInfo.systemUptime));
+}
+
++ (LQSBackendState)stateFor:(NSString *)ident {
+    if ([ident isEqualToString:@"screenrecord"] && [self recordingCountdown] > 0) return LQSBackendStateOn;
+    LQSBackendState actual = [self hardwareStateFor:ident];
+    NSDictionary *pending = gPending[ident];
+    if (!pending) return actual;
+    LQSBackendState target = [pending[@"on"] boolValue] ? LQSBackendStateOn : LQSBackendStateOff;
+    if (actual == target || [pending[@"deadline"] doubleValue] <= NSProcessInfo.processInfo.systemUptime || actual < 0) {
+        [gPending removeObjectForKey:ident];
+        return actual;
+    }
+    return target;
+}
+
++ (BOOL)isTransitioning:(NSString *)ident {
+    [self stateFor:ident]; // reconcile before reporting
+    return gPending[ident] != nil;
+}
+
++ (void)pollPendingChanges {
+    for (NSString *ident in gPending.allKeys) [self stateFor:ident];
+    [self postChanged];
+    if (!gPending.count) { [gPendingTimer invalidate]; gPendingTimer = nil; }
+}
+
++ (void)trackRequest:(BOOL)on identifier:(NSString *)ident {
+    if (!gPending) gPending = [NSMutableDictionary dictionary];
+    gPending[ident] = @{@"on": @(on), @"deadline": @(NSProcessInfo.processInfo.systemUptime + 8)};
+    if (!gPendingTimer) {
+        gPendingTimer = [NSTimer timerWithTimeInterval:0.25 repeats:YES block:^(NSTimer *t) { [self pollPendingChanges]; }];
+        [NSRunLoop.mainRunLoop addTimer:gPendingTimer forMode:NSRunLoopCommonModes];
+    }
+    [self postChanged];
+}
+
++ (BOOL)setOn:(BOOL)on forIdentifier:(NSString *)ident {
+    if (![NSBundle.mainBundle.bundleIdentifier isEqualToString:@"com.apple.springboard"]) return NO;
+    if ([ident isEqualToString:@"screenrecord"]) {
+        if (gCountdownTimer) {
+            [gCountdownTimer invalidate]; gCountdownTimer = nil; gCountdownDeadline = 0;
+            [self postChanged];
+            if (!on) return YES; // cancelled before ReplayKit was started
+        }
+        if (on) {
+            id r = Recorder();
+            if (!Has(r, @"startRecordingWithHandler:")) return NO;
+            if ([self hardwareStateFor:ident] == LQSBackendStateOn) return YES;
+            gCountdownDeadline = NSProcessInfo.processInfo.systemUptime + 3;
+            gCountdownTimer = [NSTimer timerWithTimeInterval:0.1 repeats:YES block:^(NSTimer *t) {
+                if (![self realActionsEnabled] || ![LQSSettings current].enabled) {
+                    [t invalidate]; gCountdownTimer = nil; gCountdownDeadline = 0;
+                    [self postChanged];
+                    return;
+                }
+                if ([self recordingCountdown] == 0) {
+                    [t invalidate]; gCountdownTimer = nil; gCountdownDeadline = 0;
+                    if ([self setHardwareOn:YES forIdentifier:@"screenrecord"]) [self trackRequest:YES identifier:@"screenrecord"];
+                }
+                [self postChanged];
+            }];
+            [NSRunLoop.mainRunLoop addTimer:gCountdownTimer forMode:NSRunLoopCommonModes];
+            [self postChanged];
+            return YES;
+        }
+    }
+    if (![self setHardwareOn:on forIdentifier:ident]) return NO;
+    [self trackRequest:on identifier:ident];
+    return YES;
+}
 
 + (BOOL)realActionsEnabled {
     CFPreferencesAppSynchronize((__bridge CFStringRef)LQSPrefsDomain);
@@ -250,7 +355,7 @@ static NSString *LaunchBundleFor(NSString *ident) {
     return LaunchBundleFor(identifier) ? LQSBackendKindLaunch : LQSBackendKindToggle;
 }
 
-+ (LQSBackendState)stateFor:(NSString *)ident {
++ (LQSBackendState)hardwareStateFor:(NSString *)ident {
     if (![NSBundle.mainBundle.bundleIdentifier isEqualToString:@"com.apple.springboard"]) return LQSBackendStateUnsupported;
     @try {
         if ([@[@"glyphs", @"glyphs_torch", @"nfc", @"batteryshare"] containsObject:ident]) return LQSBackendStateUnavailable; // no such hardware on iPhone 8
@@ -282,7 +387,13 @@ static NSString *LaunchBundleFor(NSString *ident) {
             if (Has(b, @"getBlueLightStatus:") && ((BOOL (*)(id, SEL, LQSBlueLightStatus *))objc_msgSend)(b, NSSelectorFromString(@"getBlueLightStatus:"), &st)) return B(st.active);
         }
         if ([ident isEqualToString:@"dnd"]) { id f = Focus(); if (Has(f, @"activeActivity")) return B(((id (*)(id, SEL))objc_msgSend)(f, NSSelectorFromString(@"activeActivity")) != nil); }
-        if ([ident isEqualToString:@"screenrecord"]) { id r = Recorder(); if (Has(r, @"recordingOn")) return B(GetBool(r, @"recordingOn")); }
+        if ([ident isEqualToString:@"screenrecord"]) {
+            if (gRecordingStateKnown) return B(gRecordingOn);
+            id r = Shared(@"RPScreenRecorder", @"sharedRecorder");
+            if (Has(r, @"systemRecording")) return B(GetBool(r, @"systemRecording"));
+            r = Recorder();
+            if (Has(r, @"recordingOn")) return B(GetBool(r, @"recordingOn"));
+        }
         if ([ident isEqualToString:@"cell"]) { int v = CellularRead(); if (v >= 0) return B(v); }
         if ([ident isEqualToString:@"inversion"]) { if (LoadAX()) return B(AXInvertGet()); }
     } @catch (NSException *e) {
@@ -291,7 +402,7 @@ static NSString *LaunchBundleFor(NSString *ident) {
     return LQSBackendStateUnsupported;
 }
 
-+ (BOOL)setOn:(BOOL)on forIdentifier:(NSString *)ident {
++ (BOOL)setHardwareOn:(BOOL)on forIdentifier:(NSString *)ident {
     @try {
         if ([ident isEqualToString:@"wifi"]) { id w = WiFi(); if (Has(w, @"setWiFiEnabled:")) { SetBool(w, @"setWiFiEnabled:", on); return YES; } }
         if ([ident isEqualToString:@"bt"]) {
@@ -326,37 +437,8 @@ static NSString *LaunchBundleFor(NSString *ident) {
         }
         if ([ident isEqualToString:@"screenrecord"]) {
             id r = Recorder();
-            if (on && Has(r, @"startRecordingWithHandler:")) { ((void (*)(id, SEL, id))objc_msgSend)(r, NSSelectorFromString(@"startRecordingWithHandler:"), ^{ /* handler argument type unknown: must not be touched (NSLog of it crashed SpringBoard 2026-10-17 00:22) */ }); return YES; }
-            if (!on && Has(r, @"stopCurrentSession:")) { ((void (*)(id, SEL, id))objc_msgSend)(r, NSSelectorFromString(@"stopCurrentSession:"), ^{ }); return YES; }
-        }
-        if ([ident isEqualToString:@"cell"]) return CellularSet(on);
-        if ([ident isEqualToString:@"inversion"]) { if (LoadAX()) { AXInvertSet(on); return YES; } }
-        if ([ident isEqualToString:@"battery"]) {
-            id b = BatterySaver();
-            SEL sel = NSSelectorFromString(@"setPowerMode:fromSource:");
-            if ([b respondsToSelector:sel]) return ((BOOL (*)(id, SEL, long long, id))objc_msgSend)(b, sel, on ? 1 : 0, @"LineageQS");
-            sel = NSSelectorFromString(@"setPowerMode:fromSource:withCompletion:");
-            if ([b respondsToSelector:sel]) { ((void (*)(id, SEL, long long, id, id))objc_msgSend)(b, sel, on ? 1 : 0, @"LineageQS", ^(BOOL ok, NSError *e) { NSLog(@"[LineageQS] LPM %d %@", ok, e); }); return YES; }
-        }
-        if ([ident isEqualToString:@"ringer"]) { id a = SystemAgent(); if (Has(a, @"setRingerMuted:")) { SetBool(a, @"setRingerMuted:", !on); return YES; } }
-        if ([ident isEqualToString:@"night"]) {
-            // setEnabled: is the manual flag; with a schedule running, "active"
-            // only follows setActive: (device test 2026-10-17).
-            id b = BlueLight();
-            if (Has(b, @"setActive:")) return ((BOOL (*)(id, SEL, BOOL))objc_msgSend)(b, NSSelectorFromString(@"setActive:"), on);
-            if (Has(b, @"setEnabled:")) return ((BOOL (*)(id, SEL, BOOL))objc_msgSend)(b, NSSelectorFromString(@"setEnabled:"), on);
-        }
-        if ([ident isEqualToString:@"dnd"]) {
-            id f = Focus();
-            SEL sel = NSSelectorFromString(@"setActivity:active:reason:");
-            id act = on ? (Has(f, @"defaultActivity") ? ((id (*)(id, SEL))objc_msgSend)(f, NSSelectorFromString(@"defaultActivity")) : nil)
-                        : (Has(f, @"activeActivity") ? ((id (*)(id, SEL))objc_msgSend)(f, NSSelectorFromString(@"activeActivity")) : nil);
-            if (act && [f respondsToSelector:sel]) { ((void (*)(id, SEL, id, BOOL, id))objc_msgSend)(f, sel, act, on, @"LineageQS"); return YES; }
-        }
-        if ([ident isEqualToString:@"screenrecord"]) {
-            id r = Recorder();
-            if (on && Has(r, @"startRecordingWithHandler:")) { ((void (*)(id, SEL, id))objc_msgSend)(r, NSSelectorFromString(@"startRecordingWithHandler:"), ^{ /* handler argument type unknown: must not be touched (NSLog of it crashed SpringBoard 2026-10-17 00:22) */ }); return YES; }
-            if (!on && Has(r, @"stopCurrentSession:")) { ((void (*)(id, SEL, id))objc_msgSend)(r, NSSelectorFromString(@"stopCurrentSession:"), ^{ }); return YES; }
+            if (on && Has(r, @"startRecordingWithHandler:")) { ((void (*)(id, SEL, id))objc_msgSend)(r, NSSelectorFromString(@"startRecordingWithHandler:"), ^{ dispatch_async(dispatch_get_main_queue(), ^{ [LQSBackends pollPendingChanges]; }); }); return YES; }
+            if (!on && Has(r, @"stopCurrentSession:")) { ((void (*)(id, SEL, id))objc_msgSend)(r, NSSelectorFromString(@"stopCurrentSession:"), ^{ dispatch_async(dispatch_get_main_queue(), ^{ [LQSBackends pollPendingChanges]; }); }); return YES; }
         }
         if ([ident isEqualToString:@"cell"]) return CellularSet(on);
         if ([ident isEqualToString:@"inversion"]) { if (LoadAX()) { AXInvertSet(on); return YES; } }

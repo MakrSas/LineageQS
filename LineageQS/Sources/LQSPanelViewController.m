@@ -10,6 +10,7 @@
 #import "LQSNotificationStack.h"
 #import "LQSEditor.h"
 #import "LQSMediaCard.h"
+#import "LQSLayout.h"
 
 NSString *const LQSLiveInfoChangedNotification = @"LQSLiveInfoChangedNotification";
 
@@ -60,7 +61,7 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
 @end
 
 @implementation LQSPanelViewController {
-    UIView *_backdrop, *_panelColor, *_content, *_gridClip, *_footer, *_actions;
+    UIView *_backdrop, *_panelColor, *_notificationSurface, *_content, *_gridClip, *_footer, *_actions;
     UIVisualEffectView *_blur;
     LQSHeaderView *_header;
     LQSBrightnessView *_brightness;
@@ -100,12 +101,24 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
 - (CGFloat)qsBrightnessTop { return gLandscape ? [_header collapsedHeight] + 8 : [_header collapsedHeight] + 80 + 16; } // landscape: no big header   // qqsPadding + qs_panel_padding_top + VerticalPadding
 - (CGFloat)brightnessHeight { return 52; }                                   // thumb 52dp (track 40 + 2 x 6 padding)
 - (CGFloat)qsGridTop { return [self qsBrightnessTop] + (_brightness.hidden ? 0 : [self brightnessHeight] + 8); }
-- (CGFloat)rowHeight:(CGFloat)squish { return [LQSTheme tileHeight] * squish; }
+- (CGFloat)tileHeight { return MIN([LQSTheme tileHeight], [self cellWidth]); }
+- (CGFloat)rowHeight:(CGFloat)squish { return [self tileHeight] * squish; }
 - (CGFloat)gridHeightRows:(NSInteger)rows squish:(CGFloat)s { return rows * [self rowHeight:s] + (rows - 1) * [LQSTheme tileGap]; }
 - (CGFloat)mediaExtra { return _media.hasMedia ? 16 + [LQSMediaCard height] : 0; } // QQS: tiles, then media (16dp)
 - (CGFloat)qqsBottom { return [self qqsTop] + [self gridHeightRows:MIN(kQQSRows, [self usedRowsOnFirstPage]) squish:1] + [self mediaExtra] + 24; } // qqs_layout_padding_bottom
 - (CGFloat)qsBottom { return [self qsGridTop] + [self gridHeightRows:kRowsPerPage squish:1] + 48 + 8 + 40 + 4; } // pager footer 48, actions
 - (CGFloat)cellWidth { return (self.view.bounds.size.width - 2 * [LQSTheme sideInset] - (kColumns - 1) * [LQSTheme tileGap]) / kColumns; }
+- (BOOL)updateGridForBounds {
+    NSInteger oldColumns = kColumns, oldRows = kRowsPerPage;
+    CGSize size = self.view.bounds.size;
+    UpdateGrid(size);
+    if (size.width > 0 && size.height > 0) {
+        CGFloat bottom = size.height - self.view.safeAreaInsets.bottom - 12;
+        CGFloat available = bottom - [self qsGridTop] - 48 - 4 - 40;
+        kRowsPerPage = LQSRowsFitting((int)kRowsPerPage, available, [self tileHeight], [LQSTheme tileGap]);
+    }
+    return oldColumns != kColumns || oldRows != kRowsPerPage;
+}
 - (NSInteger)usedRowsOnFirstPage {
     NSInteger rows = 0;
     for (NSValue *v in _cells) { LQSCell c; [v getValue:&c]; if (c.page == 0) rows = MAX(rows, c.row + 1); }
@@ -130,10 +143,19 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
     _panelColor.userInteractionEnabled = NO;
     [_backdrop addSubview:_panelColor];
 
+    // This surface reaches the bottom even while the content reveal is partial.
+    _notificationSurface = [UIView new];
+    _notificationSurface.userInteractionEnabled = NO;
+    _notificationSurface.backgroundColor = [LQSColor(@"surface_effect_0") colorWithAlphaComponent:0.5];
+    _notificationSurface.layer.cornerRadius = 28;
+    _notificationSurface.layer.maskedCorners = kCALayerMinXMinYCorner | kCALayerMaxXMinYCorner;
+    [_backdrop addSubview:_notificationSurface];
+
     _content = [UIView new];
     [root addSubview:_content];
 
     _notifs = [LQSNotificationStack new];
+    _notifs.showsBackground = NO; // drawn outside the content's reveal mask
     __weak typeof(self) weakSelf = self;
     _notifs.requestDismiss = ^{ [weakSelf.delegate panelRequestsDismiss:weakSelf]; };
     _notifs.openSettingsURL = ^(NSString *url) {
@@ -148,7 +170,11 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
     [_content addSubview:_media];
 
     _header = [LQSHeaderView new];
-    _header.onClockTap = ^{ [weakSelf openSettingsURL:@"clock-alarm:"]; };
+    _header.onClockTap = ^{
+        if ([LQSBackends realActionsEnabled] && [LQSBackends stateFor:@"screenrecord"] == LQSBackendStateOn && [LQSBackends recordingCountdown] == 0) {
+            [weakSelf confirmStopRecording];
+        } else [weakSelf openSettingsURL:@"clock-alarm:"];
+    };
     [_content addSubview:_header];
 
     _brightness = [LQSBrightnessView new];
@@ -207,18 +233,30 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
 
     [self rebuildTiles];
     _state = LQSPanelStateCompact;
-    [self setPresentationProgress:1];
+    // The preview host starts open; SpringBoard must never flash a fully open
+    // frame before Install receives the native presenter's first progress.
+    [self setPresentationProgress:[NSBundle.mainBundle.bundleIdentifier isEqualToString:@"com.apple.springboard"] ? 0 : 1];
 }
 
 - (void)setOwnBackdrop:(BOOL)own {
+    if (own) [self loadViewIfNeeded];
     _ownBackdrop = own;
     if (own && !_blur) {
         _blur = [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleRegular]];
         _blur.userInteractionEnabled = NO;
-        [_backdrop insertSubview:_blur atIndex:0];
+        // Keep effect intensity separate from the tint/scrim alpha.
+        [self.view insertSubview:_blur belowSubview:_backdrop];
     }
-    _blur.hidden = !own;
+    _blur.hidden = !own || _progress <= 0.001;
     [self.view setNeedsLayout];
+}
+
+- (void)updateBlurForProgress:(CGFloat)progress {
+    if (!_blur) return;
+    CGFloat p = MAX(0, MIN(1, progress));
+    BOOL visible = _ownBackdrop && p > 0.001;
+    _blur.alpha = p;
+    _blur.hidden = !visible;
 }
 
 - (void)openSettingsURL:(NSString *)url {
@@ -266,7 +304,7 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
         [_tiles addObject:t];
     }
     NSInteger pages = 1;
-    UpdateGrid(self.view.bounds.size);
+    [self updateGridForBounds];
     _cells = PlaceEntries(entries, &pages);
     _pageCount = pages;
     _page = MIN(_page, pages - 1);
@@ -292,6 +330,8 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
         return;
     }
     LQSBackendState bs = real ? [LQSBackends stateFor:ident] : LQSBackendStateUnsupported;
+    t.iconText = real && [ident isEqualToString:@"screenrecord"] && [LQSBackends recordingCountdown] > 0
+        ? [NSString stringWithFormat:@"%ld", (long)[LQSBackends recordingCountdown]] : nil;
     if (bs >= 0) { t.unavailable = NO; [t setOn:(bs == LQSBackendStateOn) animated:animated]; [[LQSModel shared] setOn:t.on forIdentifier:ident]; }
     else if (bs == LQSBackendStateUnavailable) { t.on = NO; t.unavailable = YES; }
     else { t.unavailable = NO; [t setOn:[[LQSModel shared] isOn:ident] animated:animated]; }
@@ -304,6 +344,7 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
 
 - (NSString *)secondaryFor:(LQSTileView *)t info:(NSDictionary *)info {
     NSString *ident = t.spec.identifier;
+    if ([LQSBackends isTransitioning:ident] || ([ident isEqualToString:@"screenrecord"] && [LQSBackends recordingCountdown] > 0)) return LQSL(t.on ? @"On" : @"Off");
     if ([ident isEqualToString:@"internet"]) {
         if ([info[@"wifiAssociated"] boolValue] && [info[@"wifiName"] length]) return info[@"wifiName"];
         if (t.on) { NSString *c = info[@"carrier"]; return c.length ? c : LQSL(@"On"); }
@@ -318,6 +359,8 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
     NSDictionary *info = [LQSBackends liveInfo];
     [_header applyLiveInfo:info];
     [_header refresh];
+    _header.recording = [LQSBackends realActionsEnabled] && [LQSBackends stateFor:@"screenrecord"] == LQSBackendStateOn
+        && [LQSBackends recordingCountdown] == 0 && ![LQSBackends isTransitioning:@"screenrecord"];
     if (![LQSBackends realActionsEnabled]) return;
     for (LQSTileView *t in _tiles) {
         [self applyStateToTile:t animated:(_progress > 0.5)];
@@ -333,13 +376,14 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
 - (void)startLiveUpdates {
     if (_liveTimer) return;
     NSNotificationCenter *nc = NSNotificationCenter.defaultCenter;
-    for (NSString *name in @[LQSLiveInfoChangedNotification, @"BluetoothPowerChangedNotification", @"BluetoothDeviceConnectSuccessNotification",
+    for (NSString *name in @[LQSBackendsChangedNotification, LQSLiveInfoChangedNotification, UIScreenCapturedDidChangeNotification, @"BluetoothPowerChangedNotification", @"BluetoothDeviceConnectSuccessNotification",
                              @"BluetoothDeviceDisconnectSuccessNotification", @"BluetoothConnectionStatusChangedNotification",
                              NSProcessInfoPowerStateDidChangeNotification, UIDeviceBatteryLevelDidChangeNotification, UIDeviceBatteryStateDidChangeNotification]) {
         [nc addObserver:self selector:@selector(liveSourceChanged:) name:name object:nil];
     }
     __weak typeof(self) weakSelf = self;
-    _liveTimer = [NSTimer scheduledTimerWithTimeInterval:2.0 repeats:YES block:^(NSTimer *t) { [weakSelf scheduleLiveRefresh]; }];
+    _liveTimer = [NSTimer timerWithTimeInterval:1.0 repeats:YES block:^(NSTimer *t) { [weakSelf scheduleLiveRefresh]; }];
+    [NSRunLoop.mainRunLoop addTimer:_liveTimer forMode:NSRunLoopCommonModes];
     [_notifs reload];
 }
 
@@ -362,6 +406,16 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
 }
 
 #pragma mark - Tile actions (Tile.kt:240-310)
+
+- (void)confirmStopRecording {
+    if (self.presentedViewController) return;
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:LQSL(@"Stop recording") message:nil preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:LQSL(@"Cancel") style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:LQSL(@"Stop recording") style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
+        [LQSBackends setOn:NO forIdentifier:@"screenrecord"];
+    }]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
 
 - (void)showDetailsFor:(NSString *)ident {
     [_dialog removeFromSuperview];
@@ -399,7 +453,8 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
     }
     LQSBackendState after = [LQSBackends activate:ident];
     NSLog(@"[LineageQS] tile %@ %ld -> %ld", ident, (long)s, (long)after);
-    [tile setOn:(s != LQSBackendStateOn) animated:YES]; // optimistic, corrected by readback
+    [self applyStateToTile:tile animated:YES]; // backend retains only accepted requests
+    tile.stateText = [self secondaryFor:tile info:[LQSBackends liveInfo]];
     for (NSNumber *d in @[@0.4, @1.2, @2.5]) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(d.doubleValue * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             [self applyStateToTile:tile animated:YES];
@@ -516,13 +571,13 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
 
 - (void)layoutAll {
     CGRect b = self.view.bounds;
-    BOOL wasLand = gLandscape;
-    UpdateGrid(b.size);
-    if (wasLand != gLandscape && _tiles.count) { [self rebuildTiles]; return; }
+    BOOL gridChanged = [self updateGridForBounds];
+    if (gridChanged && _tiles.count) { [self rebuildTiles]; return; }
     CGFloat w = b.size.width, inset = [LQSTheme sideInset];
     _backdrop.frame = b;
     _blur.frame = b;
     _panelColor.frame = b;
+    [self updateBlurForProgress:_progress];
     _content.bounds = CGRectMake(0, 0, b.size.width, b.size.height);
     _content.center = CGPointMake(CGRectGetMidX(b), CGRectGetMidY(b));
     CGFloat q = _q, p = MAX(0, MIN(1, _progress));
@@ -547,7 +602,8 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
     [self layoutTilesOnly];
 
     CGFloat qsGridBottom = [self qsGridTop] + qsH;
-    _footer.frame = CGRectMake(inset, qsGridBottom + (1 - q) * 40, w - 2 * inset, 48);
+    UIEdgeInsets safe = self.view.safeAreaInsets;
+    _footer.frame = CGRectMake(inset, LQSFooterTop(b.size.height, safe.bottom) + (1 - q) * 40, w - 2 * inset, 48);
     _footer.alpha = Range(q, 0.9, 1);
     _footer.userInteractionEnabled = q > 0.95;
     _dots.frame = _footer.bounds;
@@ -557,7 +613,9 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
     _editButton.frame = CGRectMake(_footer.bounds.size.width - 40, 4, 40, 40);
     _editButton.hidden = !_settings.editorEnabled;
     _editor.frame = b;
-    _actions.frame = CGRectMake(inset, CGRectGetMaxY(_footer.frame) + 8 - 4, w - 2 * inset, 40); // top 8dp, -4dp compensation
+    CGFloat actionsLeft = MAX(inset, safe.left + 8), actionsRight = MAX(inset, safe.right + 8);
+    CGFloat actionsTop = LQSActionRowTop(b.size.height, safe.bottom);
+    _actions.frame = CGRectMake(actionsLeft, actionsTop, MAX(0, w - actionsLeft - actionsRight), 40);
     _actions.alpha = _footer.alpha;
     _actions.userInteractionEnabled = q > 0.95;
     _powerButton.frame = CGRectMake(_actions.bounds.size.width - 40, 0, 40, 40);
@@ -573,6 +631,10 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
     _notifs.frame = CGRectMake(0, nTop, w, MAX(0, b.size.height - nTop));
     _notifs.alpha = 1 - Range(q, 0, 0.5);
     _notifs.userInteractionEnabled = q < 0.05 || _listMode != 0;
+    CGFloat surfaceTop = MAX(0, MIN(b.size.height, nTop + _content.transform.ty));
+    _notificationSurface.frame = CGRectMake(0, surfaceTop, w, b.size.height - surfaceTop);
+    _notificationSurface.alpha = _notifs.alpha;
+    _notificationSurface.hidden = _notifs.hidden;
 }
 
 - (void)layoutTilesOnly {
@@ -590,12 +652,15 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
         CGFloat width = c.span * cw + (c.span - 1) * gap;
         NSValue *bv = [_bounce objectForKey:t];
         if (bv) { CGPoint d = bv.CGPointValue; x += d.x; width += d.y; }
-        CGFloat yQS = qsTop + c.row * ([LQSTheme tileHeight] + gap);
+        CGFloat yQS = qsTop + c.row * ([self tileHeight] + gap);
         CGFloat yQQS = qqsTop + c.row * (rowH + gap);
         // QS-only tiles ride with the grid (they belong to the same expanding QS panel).
-        CGFloat y = inQQS ? Lerp(yQQS, yQS, q) : Lerp(qqsTop, qsTop, q) + c.row * ([LQSTheme tileHeight] + gap);
+        CGFloat y = inQQS ? Lerp(yQQS, yQS, q) : Lerp(qqsTop, qsTop, q) + c.row * ([self tileHeight] + gap);
         t.squish = inQQS ? squish : 1;
-        t.frame = CGRectMake(x, y - clipTop, width, inQQS ? Lerp(rowH, [LQSTheme tileHeight], q) : [LQSTheme tileHeight]);
+        CGFloat height = inQQS ? Lerp(rowH, [self tileHeight], q) : [self tileHeight];
+        // Small tiles stay square at rest on both narrow and wide displays.
+        CGFloat tileWidth = c.span == 1 ? MIN(width, [self tileHeight]) : width;
+        t.frame = CGRectMake(x + (width - tileWidth) / 2, y - clipTop, tileWidth, height);
         // QS-only tiles fade in over [0.43, 0.95] (FromShadeToQuickSettingsTransition).
         t.alpha = inQQS ? 1 : Range(q, 0.43, 0.95);
         t.userInteractionEnabled = inQQS ? (q < 0.05 || q > 0.95) : q > 0.95;
@@ -684,14 +749,13 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
 - (void)setPresentationProgress:(CGFloat)progress { [self setPresentationProgress:progress interactive:YES]; }
 
 - (void)setPresentationProgress:(CGFloat)progress interactive:(BOOL)interactive {
+    progress = MAX(0, MIN(1, progress));
+    if (!interactive && _settleLink && fabs(progress - _settleTo) < 0.001) return;
     if (interactive || fabs(progress - _progress) < 0.001) {
-        [_settleLink invalidate];
-        _settleLink = nil;
-        [self applyPresentationProgress:progress];
+        [_settleLink invalidate]; _settleLink = nil;
+        [UIView performWithoutAnimation:^{ [self applyPresentationProgress:progress]; }];
         return;
     }
-    // Settle on our own timeline (the native presenter only reports the target):
-    // open 350 ms (SHADE_OPEN_SPRING_OUT_DURATION), close 200-300 ms PANEL_CLOSE_ACCELERATED.
     _settleFrom = _progress;
     _settleTo = progress;
     _settleStart = CACurrentMediaTime();
@@ -714,7 +778,9 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
     CGFloat f = MIN(1, (CACurrentMediaTime() - _settleStart) / _settleDuration);
     BOOL opening = _settleTo > _settleFrom;
     CGFloat e = opening ? LQSCubic(0.4, 0, 0.2, 1, f) : LQSCubic(0.3, 0, 0.5, 1, f);
-    [self applyPresentationProgress:_settleFrom + (_settleTo - _settleFrom) * e];
+    [UIView performWithoutAnimation:^{
+        [self applyPresentationProgress:self->_settleFrom + (self->_settleTo - self->_settleFrom) * e];
+    }];
     if (f >= 1) { [_settleLink invalidate]; _settleLink = nil; }
 }
 
@@ -723,6 +789,8 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
     if (progress <= 0.001 && _progress > 0.001) { [self stopLiveUpdates]; [_dialog removeFromSuperview]; _dialog = nil; }
     _progress = progress;
     CGFloat p = MAX(0, MIN(1, progress));
+    if ([self.delegate respondsToSelector:@selector(panel:didChangePresentationProgress:)])
+        [self.delegate panel:self didChangePresentationProgress:p];
     // Panel background follows the expansion linearly (ScrimController behindAlpha * panelFraction).
     _backdrop.alpha = p;
     // Content: revealed from the top by the panel edge, content alpha getContentAlpha,
@@ -730,6 +798,8 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
     if (!_revealMask) {
         _revealMask = [CALayer layer];
         _revealMask.backgroundColor = UIColor.blackColor.CGColor;
+        // Reveal content only. The dark surfaces are full-height siblings,
+        // never clipped to the moving reveal edge.
         _content.layer.mask = _revealMask;
     }
     CGFloat h = self.view.bounds.size.height;

@@ -17,3 +17,6 @@
 "Плитки возвращены к набору Android 17 по умолчанию." = "Tiles are back to the Android 17 default set.";
 "LineageQS отключён" = "LineageQS disabled";
 "Размытие плиток и уведомлений" = "Blur tiles and notifications";
+
+"Home Screen swipe down opens notifications" = "Home Screen swipe down opens notifications";
+"Replaces swipe-down search only on Home Screen icon pages. App Library, Today View, widgets and Smart Stacks keep their gestures." = "Replaces swipe-down search only on Home Screen icon pages. App Library, Today View, widgets and Smart Stacks keep their gestures.";

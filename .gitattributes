@@ -1,0 +1,3 @@
+*.sh text eol=lf
+**/control text eol=lf
+**/DEBIAN/* text eol=lf

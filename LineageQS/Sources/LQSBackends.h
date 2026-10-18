@@ -22,6 +22,10 @@ typedef NS_ENUM(NSInteger, LQSBackendKind) {
 + (BOOL)realActionsEnabled;                       // settings key realActions (default NO)
 + (LQSBackendKind)kindFor:(NSString *)identifier;
 + (LQSBackendState)stateFor:(NSString *)identifier;
++ (BOOL)isTransitioning:(NSString *)identifier;
++ (NSInteger)recordingCountdown; // 3...1 before starting; zero otherwise
++ (void)prepare; // load optional recording classes before Logos installs hooks
++ (void)recordingStateChanged:(BOOL)recording;
 // Toggles / launches. Returns the state read back afterwards (may lag: the
 // caller should refresh again shortly).
 + (LQSBackendState)activate:(NSString *)identifier;

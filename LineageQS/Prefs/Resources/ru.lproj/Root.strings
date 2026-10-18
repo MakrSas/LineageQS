@@ -1,1 +1,4 @@
 /* Russian is the source language of Root.plist: keys are used as-is. */
+
+"Home Screen swipe down opens notifications" = "Свайп вниз на главном экране открывает уведомления";
+"Replaces swipe-down search only on Home Screen icon pages. App Library, Today View, widgets and Smart Stacks keep their gestures." = "Заменяет поиск свайпом вниз только на страницах значков главного экрана. Библиотека приложений, экран «Сегодня», виджеты и смарт-стопки сохраняют свои жесты.";

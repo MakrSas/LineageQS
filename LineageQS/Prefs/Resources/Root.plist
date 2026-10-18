@@ -157,6 +157,26 @@
 		<dict>
 			<key>cell</key>
 			<string>PSGroupCell</string>
+			<key>footerText</key>
+			<string>Replaces swipe-down search only on Home Screen icon pages. App Library, Today View, widgets and Smart Stacks keep their gestures.</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<false/>
+			<key>defaults</key>
+			<string>com.makr.lineageqs</string>
+			<key>key</key>
+			<string>homeSwipeNotifications</string>
+			<key>label</key>
+			<string>Home Screen swipe down opens notifications</string>
+			<key>PostNotification</key>
+			<string>com.makr.lineageqs/prefs-changed</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
 			<key>label</key>
 			<string>Раскладка</string>
 		</dict>

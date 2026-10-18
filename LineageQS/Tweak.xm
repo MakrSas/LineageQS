@@ -89,6 +89,34 @@ static id IvarValue(id obj, const char *name) {
     return iv ? object_getIvar(obj, iv) : nil;
 }
 
+// Use the existing MaterialKit backdrop without replacing its system recipe.
+// Private API varies by OS: check the scalar ABI and fall back to view alpha.
+static void SetSystemBackdropProgress(UIViewController *overlay, CGFloat progress) {
+    if (!overlay) return;
+    UIView *background = IvarValue(overlay, "_backgroundView");
+    if (![background isKindOfClass:UIView.class]) return;
+    CGFloat p = MAX(0, MIN(1, progress));
+    [UIView performWithoutAnimation:^{
+        BOOL weighted = NO;
+        @try {
+            SEL setter = NSSelectorFromString(@"setWeighting:");
+            NSMethodSignature *signature = [background methodSignatureForSelector:setter];
+            if ([background respondsToSelector:setter] && signature.numberOfArguments == 3) {
+                const char *type = [signature getArgumentTypeAtIndex:2];
+                if (type[0] == 'd') {
+                    ((void (*)(id, SEL, double))objc_msgSend)(background, setter, (double)p);
+                    weighted = YES;
+                } else if (type[0] == 'f') {
+                    ((void (*)(id, SEL, float))objc_msgSend)(background, setter, (float)p);
+                    weighted = YES;
+                }
+            }
+        } @catch (__unused NSException *e) { }
+        background.alpha = weighted ? 1 : p;
+        background.hidden = p <= 0.001;
+    }];
+}
+
 // Native views replaced by the panel. Their own alpha animations keep
 // running; we only force hidden while our panel is installed.
 static void SetNativeContentHidden(UIViewController *overlay, BOOL hidden) {
@@ -101,7 +129,11 @@ static void SetNativeContentHidden(UIViewController *overlay, BOOL hidden) {
 
 @interface LQSDismissProxy : NSObject <LQSPanelDelegate>
 @end
+
 @implementation LQSDismissProxy
+- (void)panel:(LQSPanelViewController *)panel didChangePresentationProgress:(CGFloat)progress {
+    SetSystemBackdropProgress(panel.parentViewController, progress);
+}
 - (void)panelRequestsDismiss:(LQSPanelViewController *)panel {
     // Native path: SBControlCenterController runs _willDismiss/_didDismiss,
     // releases its assertions and hides SBControlCenterWindow.
@@ -125,7 +157,11 @@ static void Uninstall(NSString *why) {
         gPanel = nil;
         NLog(@"panel removed (%@)", why);
     }
-    if (ov) SetNativeContentHidden(ov, NO);
+    if (ov) {
+        SBControlCenterController *cc = [objc_getClass("SBControlCenterController") sharedInstanceIfExists];
+        SetSystemBackdropProgress(ov, (cc && [cc isPresented]) ? 1 : 0);
+        SetNativeContentHidden(ov, NO);
+    }
 }
 
 static void Install(CCUIModularControlCenterOverlayViewController *ov) {
@@ -148,7 +184,7 @@ static void Install(CCUIModularControlCenterOverlayViewController *ov) {
         SetNativeContentHidden(ov, YES);
         // Closed state until the native transition reports progress.
         SBControlCenterController *cc = [objc_getClass("SBControlCenterController") sharedInstanceIfExists];
-        [panel setPresentationProgress:(cc && [cc isPresented]) ? 1 : 0];
+        [panel setPresentationProgress:(cc && [cc isPresented]) ? 1 : 0 interactive:NO];
         NLog(@"panel installed into %@ %@", NSStringFromClass(ov.class), NSStringFromCGRect(ov.view.bounds));
     } @catch (NSException *e) {
         HardDisable([NSString stringWithFormat:@"install exception %@", e]);
@@ -234,6 +270,22 @@ static void ReloadPrefs(void) {
 
 #pragma mark - Live status updates
 
+// Observe ReplayKit without replacing its delegates (the native recording
+// status-bar button and stop confirmation must retain their own delegates).
+%hook RPScreenRecorder
+- (void)setSystemRecording:(BOOL)recording {
+    %orig;
+    [LQSBackends recordingStateChanged:recording];
+}
+%end
+
+%hook RPControlCenterClient
+- (void)updateStatusIsCountingDown:(BOOL)countingDown IsRecording:(BOOL)recording {
+    %orig;
+    if (!countingDown) [LQSBackends recordingStateChanged:recording];
+}
+%end
+
 // Event-driven status data (confirmed by the first device probe: callbacks with
 // action masks on Wi-Fi / cellular / time changes). Forward as a local
 // notification; the panel coalesces and only refreshes while visible.
@@ -268,7 +320,7 @@ static void ReloadPrefs(void) {
 // Settings: bottomSwipe (default YES = stock), topSwipe (default NO),
 // topSwipeSplit (NO: whole top edge opens the panel; YES: Android dual-shade
 // split, left half keeps Notification Center, config_invocationGestureSplitRatio
-// 0.5), topRoute (0 presentAnimated, 1 interactive via overlay VC,
+// 0.5), topRoute (0 native presentAnimated, 1 interactive via overlay VC,
 // 2 _handleStatusBarPullDownGesture:). Read live from preferences.
 static id PrefObj(NSString *key) {
     return CFBridgingRelease(CFPreferencesCopyAppValue((__bridge CFStringRef)key, (__bridge CFStringRef)LQSPrefsDomain));
@@ -276,7 +328,7 @@ static id PrefObj(NSString *key) {
 static BOOL PrefB(NSString *key, BOOL def) { id v = PrefObj(key); return [v respondsToSelector:@selector(boolValue)] ? [v boolValue] : def; }
 static NSInteger PrefI(NSString *key, NSInteger def) { id v = PrefObj(key); return [v respondsToSelector:@selector(integerValue)] ? [v integerValue] : def; }
 
-static BOOL gBottomSwipe = YES, gTopSwipe = NO, gTopSplit = NO;
+static BOOL gBottomSwipe = YES, gTopSwipe = NO, gTopSplit = NO, gHomeSwipe = NO;
 static NSInteger gTopRoute = 0;
 
 static void ReloadGesturePrefs(void) {
@@ -284,10 +336,174 @@ static void ReloadGesturePrefs(void) {
     BOOL active = gEnabled && !gDisabledHard; // gestures only change while the panel is enabled
     gBottomSwipe = !active || PrefB(@"bottomSwipe", YES);
     gTopSwipe = active && PrefB(@"topSwipe", NO);
+    gHomeSwipe = active && PrefB(@"homeSwipeNotifications", NO);
     gTopSplit = PrefB(@"topSwipeSplit", NO);
     gTopRoute = PrefI(@"topRoute", 1); // default: interactive, follows the finger
+    NLog(@"home swipe notifications=%d", gHomeSwipe);
     NLog(@"gestures: bottomSwipe=%d topSwipe=%d split=%d route=%ld", gBottomSwipe, gTopSwipe, gTopSplit, (long)gTopRoute);
 }
+
+// A root-view gesture, not a window gesture: apps, Today View and App Library
+// never lose their own vertical scrolling. Spotlight only waits when eligible.
+@interface SBRootFolderView : UIView
+@end
+
+static id HomeObject(id obj, NSString *name) {
+    SEL sel = NSSelectorFromString(name);
+    return [obj respondsToSelector:sel] ? ((id (*)(id, SEL))objc_msgSend)(obj, sel) : nil;
+}
+static BOOL HomeFlag(id obj, NSString *name) {
+    SEL sel = NSSelectorFromString(name);
+    return [obj respondsToSelector:sel] && ((BOOL (*)(id, SEL))objc_msgSend)(obj, sel);
+}
+static BOOL HomePageAllowsSwipe(UIView *root) {
+    if (!gHomeSwipe || !gEnabled || gDisabledHard || !root.window) return NO;
+    // Fail closed on an unknown OS layout instead of taking over custom pages.
+    if (![root respondsToSelector:NSSelectorFromString(@"isOnLeadingCustomPage")] ||
+        ![root respondsToSelector:NSSelectorFromString(@"isOnTrailingCustomPage")]) return NO;
+    for (NSString *name in @[@"isOnLeadingCustomPage", @"isOnTrailingCustomPage",
+                             @"isOccludedByOverlay", @"isPageManagementUIVisible"])
+        if (HomeFlag(root, name)) return NO;
+    for (NSString *name in @[@"leadingCustomViewVisibilityProgress", @"trailingCustomViewVisibilityProgress", @"todayViewVisibilityProgress"]) {
+        SEL sel = NSSelectorFromString(name);
+        if ([root respondsToSelector:sel] && ((double (*)(id, SEL))objc_msgSend)(root, sel) > 0.001) return NO;
+    }
+    id controller = HomeObject(root, @"delegate");
+    for (NSString *name in @[@"isEditing", @"isScrolling", @"isTransitioningPageState",
+                             @"isAnySearchVisibleOrTransitioning", @"isPullDownSearchVisibleOrTransitioning"])
+        if (HomeFlag(controller, name)) return NO;
+    id deepest = HomeObject(controller, @"deepestFolderController");
+    if (deepest && deepest != controller) return NO;
+    if (HomeObject(controller, @"presentedViewController")) return NO;
+    return YES;
+}
+static BOOL HomeTouchAllowsSwipe(UIView *root, UIView *touched) {
+    if (!touched || ![touched isDescendantOfView:root]) return NO;
+    for (UIView *view = touched; view && view != root; view = view.superview) {
+        if ([view isKindOfClass:UIControl.class]) return NO;
+        // Includes WidgetKit hosts, legacy widgets, Smart Stacks and their
+        // wrappers. Inspect superclasses too (remote host subclasses vary).
+        for (Class cls = view.class; cls && cls != UIView.class; cls = class_getSuperclass(cls)) {
+            NSString *name = NSStringFromClass(cls);
+            if ([name rangeOfString:@"Widget" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+                [name rangeOfString:@"Stack" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+                [name hasPrefix:@"SBHLibrary"] || [name hasPrefix:@"SBToday"]) return NO;
+        }
+        id icon = HomeObject(view, @"icon");
+        if (HomeFlag(icon, @"isWidgetIcon") || HomeFlag(icon, @"isWidgetStackIcon") || HomeFlag(icon, @"isStackIcon")) return NO;
+    }
+    return YES;
+}
+
+@interface LQSHomeSwipe : NSObject <UIGestureRecognizerDelegate>
+@property (nonatomic, weak) UIView *root;
+@property (nonatomic, strong) UIPanGestureRecognizer *pan;
+@property (nonatomic, strong) CCUIModularControlCenterOverlayViewController *routedOverlay;
+@property (nonatomic, weak) id searchGesture;
+@property (nonatomic) BOOL searchDependencyReady;
+@property (nonatomic, weak) UIView *touchStartView;
+- (void)connectSearch:(id)search;
+@end
+
+@implementation LQSHomeSwipe
+- (void)connectSearch:(id)search {
+    if (!search || (self.searchGesture == search && self.searchDependencyReady)) return;
+    SEL require = NSSelectorFromString(@"requireGestureRecognizerToFail:");
+    if (![search respondsToSelector:require]) return;
+    ((void (*)(id, SEL, id))objc_msgSend)(search, require, self.pan);
+    self.searchGesture = search;
+    self.searchDependencyReady = YES;
+}
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gesture shouldReceiveTouch:(UITouch *)touch {
+    self.touchStartView = nil;
+    if (!self.searchDependencyReady || !HomePageAllowsSwipe(self.root) || !HomeTouchAllowsSwipe(self.root, touch.view)) return NO;
+    self.touchStartView = touch.view;
+    return YES;
+}
+- (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gesture {
+    if (!HomePageAllowsSwipe(self.root) || !HomeTouchAllowsSwipe(self.root, self.touchStartView)) return NO;
+    // Direction depends on displacement, not speed: slow pulls must not release Spotlight.
+    CGPoint delta = [self.pan translationInView:self.root];
+    return delta.y > 0 && delta.y > fabs(delta.x);
+}
+- (void)panned:(UIPanGestureRecognizer *)gesture {
+    UIGestureRecognizerState state = gesture.state;
+    BOOL terminal = state == UIGestureRecognizerStateEnded || state == UIGestureRecognizerStateCancelled || state == UIGestureRecognizerStateFailed;
+    @try {
+        if (state == UIGestureRecognizerStateBegan) {
+            SBControlCenterController *cc = [objc_getClass("SBControlCenterController") sharedInstanceIfExists];
+            if (!cc || [cc isPresented]) return;
+            CCUIModularControlCenterOverlayViewController *overlay = CurrentOverlay();
+            if (!overlay) { NLog(@"home pan: native overlay unavailable"); return; }
+            [overlay loadViewIfNeeded];
+            Install(overlay);
+            gPanel.notificationsMode = YES;
+            [gPanel setState:LQSPanelStateCompact animated:NO];
+            self.routedOverlay = overlay;
+        }
+        CCUIModularControlCenterOverlayViewController *overlay = self.routedOverlay;
+        if (!overlay) return;
+        // Normalize the origin to the native bottom edge, regardless of the
+        // Home Screen touch position. Never use immediate presentAnimated.
+        CGPoint delta = [gesture translationInView:self.root];
+        CGPoint velocity = [gesture velocityInView:self.root];
+        CGPoint point = [gesture locationInView:self.root];
+        CGFloat down = MAX(0, delta.y);
+        CGFloat height = overlay.view.bounds.size.height;
+        CGFloat x = (point.x - delta.x) / MAX(1, self.root.bounds.size.width) * overlay.view.bounds.size.width;
+        CGPoint location = CGPointMake(x, height - down);
+        CGPoint translation = CGPointMake(0, -down);
+        CGPoint nativeVelocity = CGPointMake(0, -velocity.y);
+        if (state == UIGestureRecognizerStateBegan) {
+            [overlay beginPresentationWithLocation:location translation:translation velocity:nativeVelocity];
+            NLog(@"home pan began interactive notifications");
+        } else if (state == UIGestureRecognizerStateChanged) {
+            [overlay updatePresentationWithLocation:location translation:translation velocity:nativeVelocity];
+        } else if (state == UIGestureRecognizerStateEnded) {
+            [overlay endPresentationWithLocation:location translation:translation velocity:nativeVelocity];
+        } else if (terminal) {
+            [overlay cancelPresentationWithLocation:location translation:translation velocity:nativeVelocity];
+        }
+    } @catch (NSException *e) {
+        NLog(@"home pan exception %@", e);
+        @try {
+            [self.routedOverlay cancelPresentationWithLocation:CGPointZero translation:CGPointZero velocity:CGPointZero];
+        } @catch (__unused NSException *cancelError) { }
+        self.routedOverlay = nil;
+    } @finally {
+        if (terminal) self.routedOverlay = nil;
+    }
+}
+@end
+
+static char kHomeSwipeKey;
+static void ConfigureHomeSwipe(UIView *root, id search) {
+    if (!root) return;
+    LQSHomeSwipe *handler = objc_getAssociatedObject(root, &kHomeSwipeKey);
+    if (!handler) {
+        handler = [LQSHomeSwipe new];
+        handler.root = root;
+        UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:handler action:@selector(panned:)];
+        pan.minimumNumberOfTouches = 1;
+        pan.maximumNumberOfTouches = 1;
+        pan.delegate = handler;
+        handler.pan = pan;
+        objc_setAssociatedObject(root, &kHomeSwipeKey, handler, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        [root addGestureRecognizer:pan];
+    }
+    [handler connectSearch:search ?: HomeObject(root, @"searchGesture")];
+}
+
+%hook SBRootFolderView
+- (void)didMoveToWindow {
+    %orig;
+    ConfigureHomeSwipe(self, nil);
+}
+- (void)setSearchGesture:(id)search {
+    %orig;
+    ConfigureHomeSwipe(self, search);
+}
+%end
 
 static __weak UIGestureRecognizer *gRoutedGesture;
 
@@ -323,12 +539,6 @@ static BOOL RouteTopGesture(UIPanGestureRecognizer *g) {
     UIGestureRecognizerState st = g.state;
     CGPoint loc, tr, vel;
     MirrorForOverlay(g, &loc, &tr, &vel);
-    static CFAbsoluteTime lastLog;
-    if (st != UIGestureRecognizerStateChanged || CFAbsoluteTimeGetCurrent() - lastLog > 0.15) {
-        lastLog = CFAbsoluteTimeGetCurrent();
-        NLog(@"TOP state=%ld route=%ld raw=(%.0f,%.0f) t=(%.0f,%.0f) presented=%d", (long)st, (long)gTopRoute,
-             [g locationInView:g.view].x, [g locationInView:g.view].y, tr.x, -tr.y, [cc isPresented]);
-    }
     @try {
         switch (gTopRoute) {
             case 1:
@@ -372,6 +582,15 @@ static BOOL RouteTopGesture(UIPanGestureRecognizer *g) {
 - (void)_handlePresentGesture:(UIPanGestureRecognizer *)g {
     if (g.state == UIGestureRecognizerStateBegan) {
         gRoutedGesture = nil;
+        // Status-bar activity taps can use this path too. Only claim real
+        // downward pans; a tap on the red recording pill belongs to iOS.
+        if (![g isKindOfClass:UIPanGestureRecognizer.class]) { %orig; return; }
+        CGPoint location, translation, velocity;
+        MirrorForOverlay(g, &location, &translation, &velocity);
+        CGFloat down = -translation.y, downVelocity = -velocity.y;
+        if (down <= 0 && downVelocity <= 0) { %orig; return; }
+        if ([LQSBackends stateFor:@"screenrecord"] == LQSBackendStateOn &&
+            down < 4 && downVelocity < 40) { %orig; return; }
         CGPoint p = [g locationInView:g.view];
         BOOL leftHalf = p.x < g.view.bounds.size.width * 0.5; // config_invocationGestureSplitRatio
         NLog(@"cover sheet present gesture began in %@ at (%.0f,%.0f) topSwipe=%d split=%d left=%d", NSStringFromClass(self.class), p.x, p.y, gTopSwipe, gTopSplit, leftHalf);
@@ -527,6 +746,7 @@ static void RegisterDarwin(NSString *name, void (^block)(void)) {
 
         gEnabled = [LQSSettings current].enabled;
         NLog(@"loaded: enabled=%d iOS=%@", gEnabled, UIDevice.currentDevice.systemVersion);
+        [LQSBackends prepare];
         %init;
         ReloadGesturePrefs();
 

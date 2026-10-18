@@ -219,8 +219,8 @@ Scrim в этой стадии: см. раздел 5.
 
 ### 5.1 Формулы
 
-`SIA:13-16`: `getNotificationScrimAlpha(f) = easeInOut(constrainedMap(0..1 -> 0..0.5, f))`.
-`SIA:24-27`: `getContentAlpha(f) = easeInOut(constrainedMap(0..1 -> 0.3..1, f))`.
+`SIA:13-16`: `getNotificationScrimAlpha(f) = easeInOut(clamp(f / 0.5, 0, 1))`.
+`SIA:24-27`: `getContentAlpha(f) = easeInOut(clamp((f - 0.3) / 0.7, 0, 1))`.
 `SIA` (`interpolateEaseInOut`): `m = f*1.2 - 0.2`; если `m <= 0` то 0; иначе `o = 1 - m`, результат `1 - 0.5*(1 - cos(pi * o*o))`, где `pi = 3.14159`.
 
 То есть scrim в первые ~17% прогресса практически 0, а к 100% достигает 0.5 от непрозрачного (с кривой ease-in-out).

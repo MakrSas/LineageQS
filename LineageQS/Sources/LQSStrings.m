@@ -48,7 +48,7 @@ static NSDictionary *Aliases(void) {
 
 static NSDictionary *Own(NSString *lang) {
     if (![lang hasPrefix:@"ru"]) return @{};
-    return @{@"Show less": @"Свернуть", @"Connecting to %@…": @"Подключение к %@…", @"now": @"сейчас",
+    return @{@"Stop recording": @"Остановить запись", @"Show less": @"Свернуть", @"Connecting to %@…": @"Подключение к %@…", @"now": @"сейчас",
              @"Searching for networks…": @"Поиск сетей…", @"Tap a network to connect": @"Нажмите на сеть, чтобы подключиться",
              @"Tap to connect or disconnect a device": @"Нажмите, чтобы подключить или отключить устройство",
              @"This phone": @"Этот телефон", @"Reset": @"Сбросить", @"OK": @"ОК", @"Cancel": @"Отмена", @"Undo": @"Отменить", @"You're all caught up": @"Уведомлений нет", @"Ring": @"Звонок", @"Mute": @"Без звука"};

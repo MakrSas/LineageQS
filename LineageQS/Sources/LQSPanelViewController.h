@@ -15,6 +15,8 @@ FOUNDATION_EXTERN NSString *const LQSLiveInfoChangedNotification;
 
 @protocol LQSPanelDelegate <NSObject>
 - (void)panelRequestsDismiss:(LQSPanelViewController *)panel;
+@optional
+- (void)panel:(LQSPanelViewController *)panel didChangePresentationProgress:(CGFloat)progress;
 @end
 
 typedef NS_ENUM(NSInteger, LQSPanelState) {
@@ -36,7 +38,7 @@ typedef NS_ENUM(NSInteger, LQSPanelState) {
 // Kept for Tweak.xm compatibility (NOS dual shade); the Android 17 single shade
 // always shows notifications under QQS, so this only selects compact state.
 @property (nonatomic) BOOL notificationsMode;
-// Preview host: draw our own blurred backdrop (SpringBoard uses the native CC one).
+// Preview-only blur fallback; SpringBoard uses the native CC material.
 @property (nonatomic) BOOL ownBackdrop;
 @end
 

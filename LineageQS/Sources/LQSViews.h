@@ -14,6 +14,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic) BOOL unavailable;
 @property (nonatomic, copy, nullable) NSString *stateText;   // secondary label
 @property (nonatomic, copy, nullable) NSString *iconOverride; // live icon (Wi-Fi bars, cellular bars)
+@property (nonatomic, copy, nullable) NSString *iconText; // recording countdown overlay
 @property (nonatomic, readonly) BOOL lastTouchInIcon;         // large dual-target: icon bubble = toggle
 @property (nonatomic) CGFloat squish;                          // 0.1...1 vertical squish (SquishTile.kt)
 // Container bounce (BounceableTileViewModel / BounceableInfo): extra width while
@@ -47,6 +48,7 @@ NS_ASSUME_NONNULL_BEGIN
 // carrier | date, chip) states, morphed by expansion 0...1 (QQS -> QS).
 @interface LQSHeaderView : UIView
 @property (nonatomic) CGFloat expansion;
+@property (nonatomic) BOOL recording; // red, tappable clock while recording
 - (void)applyLiveInfo:(NSDictionary *)info;
 - (void)refresh;
 @property (nonatomic, readonly) CGFloat collapsedHeight;
