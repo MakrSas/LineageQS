@@ -90,14 +90,16 @@ static id IvarValue(id obj, const char *name) {
     return iv ? object_getIvar(obj, iv) : nil;
 }
 
-// Use the existing MaterialKit backdrop without replacing its system recipe.
-// Private API varies by OS: check the scalar ABI and fall back to view alpha.
+// Use the native material recipe and drive its strength with shade progress.
+// Private API varies by OS: check the scalar ABI, falling back to view alpha.
 static void SetSystemBackdropProgress(UIViewController *overlay, CGFloat progress) {
     if (!overlay) return;
     UIView *background = IvarValue(overlay, "_backgroundView");
     if (![background isKindOfClass:UIView.class]) return;
     CGFloat p = MAX(0, MIN(1, progress));
     [UIView performWithoutAnimation:^{
+        [CATransaction begin];
+        [CATransaction setDisableActions:YES];
         BOOL weighted = NO;
         @try {
             SEL setter = NSSelectorFromString(@"setWeighting:");
@@ -113,8 +115,11 @@ static void SetSystemBackdropProgress(UIViewController *overlay, CGFloat progres
                 }
             }
         } @catch (__unused NSException *e) { }
+        // Native opacity animations must not compete with finger-driven alpha.
+        [background.layer removeAnimationForKey:@"opacity"];
         background.alpha = weighted ? 1 : p;
         background.hidden = p <= 0.001;
+        [CATransaction commit];
     }];
 }
 
@@ -509,25 +514,21 @@ static void ConfigureHomeSwipe(UIView *root, id search) {
 static __weak UIGestureRecognizer *gRoutedGesture;
 
 static void MirrorForOverlay(UIPanGestureRecognizer *g, CGPoint *loc, CGPoint *tr, CGPoint *vel) {
-    // The iPhone 8 overlay presenter (slide-up) opens on upward translation.
-    // A downward pull from the top edge is mirrored so progress follows the finger.
+    // Work in the interface-oriented scene space before mirroring. The gesture
+    // host can retain portrait bounds in landscape; guessing an axis from the
+    // starting edge can turn a top pull into a horizontal presentation.
     UIView *v = g.view;
-    CGFloat h = v.bounds.size.height, w = v.bounds.size.width;
+    UIWindow *window = v.window;
+    id<UICoordinateSpace> space = window.windowScene.coordinateSpace;
+    CGFloat h = space ? space.bounds.size.height : v.bounds.size.height;
     CGPoint l = [g locationInView:v], t = [g translationInView:v], ve = [g velocityInView:v];
-    // Landscape: the gesture view stays in portrait coordinates, so "down on screen" runs
-    // along X. Which way depends on the side the pull started from (top edge of the screen).
-    static UIInterfaceOrientation o;
-    if (g.state == UIGestureRecognizerStateBegan || o == UIInterfaceOrientationUnknown) {
-        UIApplication *app = UIApplication.sharedApplication;
-        o = [app respondsToSelector:@selector(activeInterfaceOrientation)] ? ((UIInterfaceOrientation (*)(id, SEL))objc_msgSend)(app, @selector(activeInterfaceOrientation)) : UIInterfaceOrientationPortrait;
-    }
-    CGPoint start = CGPointMake(l.x - t.x, l.y - t.y);
-    if (UIInterfaceOrientationIsLandscape(o) && start.y > 60 && (start.x < 60 || start.x > w - 60)) {
-        CGFloat sign = start.x < w / 2 ? 1 : -1, down = sign * t.x, vdown = sign * ve.x, along = start.x < w / 2 ? l.y : h - l.y;
-        *loc = CGPointMake(along, h - down);
-        *tr = CGPointMake(0, -down);
-        *vel = CGPointMake(0, -vdown);
-        return;
+    if (space && window) {
+        CGPoint origin = [space convertPoint:[v convertPoint:CGPointZero toView:window] fromCoordinateSpace:window];
+        CGPoint tip = [space convertPoint:[v convertPoint:t toView:window] fromCoordinateSpace:window];
+        CGPoint velocityTip = [space convertPoint:[v convertPoint:ve toView:window] fromCoordinateSpace:window];
+        l = [space convertPoint:[g locationInView:window] fromCoordinateSpace:window];
+        t = CGPointMake(tip.x - origin.x, tip.y - origin.y);
+        ve = CGPointMake(velocityTip.x - origin.x, velocityTip.y - origin.y);
     }
     *loc = CGPointMake(l.x, h - l.y);
     *tr = CGPointMake(t.x, -t.y);
@@ -598,7 +599,9 @@ static BOOL RouteTopGesture(UIPanGestureRecognizer *g) {
         if ([LQSBackends stateFor:@"screenrecord"] == LQSBackendStateOn &&
             down < 4 && downVelocity < 40) { %orig; return; }
         CGPoint p = [g locationInView:g.view];
-        BOOL leftHalf = p.x < g.view.bounds.size.width * 0.5; // config_invocationGestureSplitRatio
+        CGFloat interfaceWidth = g.view.window.windowScene.coordinateSpace.bounds.size.width;
+        if (interfaceWidth <= 0) interfaceWidth = g.view.bounds.size.width;
+        BOOL leftHalf = location.x < interfaceWidth * 0.5; // config_invocationGestureSplitRatio
         NLog(@"cover sheet present gesture began in %@ at (%.0f,%.0f) topSwipe=%d split=%d left=%d", NSStringFromClass(self.class), p.x, p.y, gTopSwipe, gTopSplit, leftHalf);
         // Android dual shade: left half = notifications shade (ours when notifShade=YES,
         // otherwise iOS Notification Center), right half (or no split) = quick settings.

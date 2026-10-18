@@ -330,7 +330,10 @@ static void SwipeHaptic(BOOL strong) {
         _empty.font = [LQSTheme sansWithSize:16 weight:400];
         _empty.textColor = [LQSTheme onSurfaceVariant];
         _empty.textAlignment = NSTextAlignmentCenter;
-        [_scroll addSubview:_empty];
+        // EmptyShadeView belongs to the viewport, not the scrollable content.
+        // UIScrollView may adjust its offset when its final bounds/contentSize
+        // settle, which must not move the centered empty-state message.
+        [self addSubview:_empty];
         __weak typeof(self) weakSelf = self;
         [[NSNotificationCenter defaultCenter] addObserverForName:LQSNotificationsChangedNotification object:nil queue:NSOperationQueue.mainQueue
                                                       usingBlock:^(NSNotification *n) { [weakSelf reload]; }];
@@ -444,8 +447,14 @@ static void SwipeHaptic(BOOL strong) {
     if (none) {
         // StackScrollAlgorithm centers EmptyShadeView in the available stack,
         // rather than pinning it immediately below the QQS boundary.
-        _empty.frame = CGRectMake(kMargin, MAX(y, (self.bounds.size.height - 24) / 2), w, 24);
-        y = MAX(self.bounds.size.height, CGRectGetMaxY(_empty.frame) + kMargin);
+        // Keep glyph geometry fixed while moving the label. Round its final
+        // position to physical pixels so fractional viewport sizes do not make
+        // text alternate between rasterizations during a slow pull.
+        CGFloat scale = self.window.screen.scale ?: UIScreen.mainScreen.scale;
+        CGFloat emptyY = MAX(y, (self.bounds.size.height - 24) / 2);
+        _empty.bounds = CGRectMake(0, 0, w, 24);
+        _empty.center = CGPointMake(self.bounds.size.width / 2, round((emptyY + 12) * scale) / scale);
+        y = self.bounds.size.height;
     } else {
         y += (16 - kGap) * fraction;
         CGSize ms = [_manage sizeThatFits:CGSizeMake(200, 40)], cs = [_clear sizeThatFits:CGSizeMake(200, 40)];
