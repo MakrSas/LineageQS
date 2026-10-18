@@ -411,8 +411,9 @@ static BOOL RouteTopGesture(UIPanGestureRecognizer *g) {
 #pragma mark - Jailed SpringBoard (Nyxian Procursus Jailed)
 
 // The jailed ROM ships its own SpringBoard (NX* classes) without Control Center.
-// The panel lives in its own window and opens with a downward swipe anywhere on
-// the home screen; it follows the finger and settles like the native path.
+// The panel is embedded in the home-screen window (extra windows are not shown
+// there) and opens with a downward swipe anywhere on the home screen. It is
+// built ahead of time so the first swipe does not stall.
 static NSArray<UIWindow *> *AllWindows(void) {
     NSMutableArray *a = [NSMutableArray array];
     for (UIScene *sc in UIApplication.sharedApplication.connectedScenes)
@@ -420,77 +421,93 @@ static NSArray<UIWindow *> *AllWindows(void) {
     return a;
 }
 
-@interface LQSJailedWindow : UIWindow
-@end
-@implementation LQSJailedWindow
-- (UIView *)hitTest:(CGPoint)p withEvent:(UIEvent *)e {
-    return self.hidden ? nil : [super hitTest:p withEvent:e];
-}
-@end
-
 @interface LQSJailedController : NSObject <LQSPanelDelegate, UIGestureRecognizerDelegate>
-@property (nonatomic, strong) LQSJailedWindow *window;
 @property (nonatomic, strong) LQSPanelViewController *panel;
-@property (nonatomic) CGFloat startProgress;
+@property (nonatomic, weak) UIWindow *host;
+@property (nonatomic) BOOL open;
 @end
 
 static LQSJailedController *gJailed;
 
 @implementation LQSJailedController
 
-- (BOOL)ensurePanel:(UIWindow *)host {
-    if (self.panel) return YES;
-    NSString *root = ResourceRoot();
-    if (!root) { NLog(@"jailed: resources missing"); return NO; }
-    [LQSTheme setResourceRoot:root];
-    [LQSVectorIcon setResourceDirectory:[root stringByAppendingPathComponent:@"vectors"]];
-    LQSStringsSetDirectory([root stringByAppendingPathComponent:@"strings"]);
-    LQSJailedWindow *w = host.windowScene ? [[LQSJailedWindow alloc] initWithWindowScene:host.windowScene] : [[LQSJailedWindow alloc] initWithFrame:host.screen.bounds];
-    w.windowLevel = UIWindowLevelStatusBar + 10;
-    w.backgroundColor = UIColor.clearColor;
-    LQSPanelViewController *panel = [LQSPanelViewController new];
-    panel.delegate = self;
-    panel.ownBackdrop = YES;
-    w.rootViewController = panel;
-    w.hidden = YES;
-    [panel loadViewIfNeeded];
-    [panel setPresentationProgress:0 interactive:YES];
-    self.window = w;
-    self.panel = panel;
-    gPanel = panel;
-    NLog(@"jailed: panel window created %@", NSStringFromCGRect(w.frame));
+- (UIWindow *)bestWindow {
+    UIWindow *best = nil;
+    for (UIWindow *w in AllWindows()) {
+        if (w.hidden || w.bounds.size.height < 100) continue;
+        if (w.isKeyWindow) return w;
+        if (!best || w.windowLevel <= best.windowLevel) best = w;
+    }
+    return best;
+}
+
+- (BOOL)ensurePanelIn:(UIWindow *)host {
+    if (!host) return NO;
+    if (!self.panel) {
+        NSString *root = ResourceRoot();
+        if (!root) { NLog(@"jailed: resources missing"); return NO; }
+        [LQSTheme setResourceRoot:root];
+        [LQSVectorIcon setResourceDirectory:[root stringByAppendingPathComponent:@"vectors"]];
+        LQSStringsSetDirectory([root stringByAppendingPathComponent:@"strings"]);
+        LQSPanelViewController *panel = [LQSPanelViewController new];
+        panel.delegate = self;
+        panel.ownBackdrop = YES;
+        [panel loadViewIfNeeded];
+        panel.view.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        panel.view.hidden = YES;
+        self.panel = panel;
+        gPanel = panel;
+        NLog(@"jailed: panel built");
+    }
+    UIView *v = self.panel.view;
+    if (v.superview != host) {
+        [v removeFromSuperview];
+        v.frame = host.bounds;
+        [host addSubview:v];
+        self.host = host;
+        NLog(@"jailed: panel embedded in %@ %@", NSStringFromClass(host.class), NSStringFromCGRect(host.bounds));
+    }
+    v.frame = host.bounds;
+    [host bringSubviewToFront:v];
+    [v setNeedsLayout];
+    [v layoutIfNeeded];
     return YES;
 }
 
+- (void)prewarm {
+    UIWindow *w = [self bestWindow];
+    if (!w || self.panel) return;
+    @try {
+        [self ensurePanelIn:w];
+        [self.panel setPresentationProgress:0 interactive:YES];
+        self.panel.view.hidden = YES;
+    } @catch (NSException *e) { NLog(@"jailed prewarm exception %@", e); }
+}
+
 - (void)attachToWindow:(UIWindow *)w {
-    if (!w || [w isKindOfClass:LQSJailedWindow.class]) return;
+    if (!w) return;
     for (UIGestureRecognizer *g in w.gestureRecognizers) if (g.delegate == self) return;
     UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(pan:)];
     pan.delegate = self;
-    pan.cancelsTouchesInView = YES;
+    pan.cancelsTouchesInView = NO;
+    pan.delaysTouchesBegan = NO;
+    pan.delaysTouchesEnded = NO;
     [w addGestureRecognizer:pan];
     NLog(@"jailed: swipe-down gesture on %@", NSStringFromClass(w.class));
 }
 
 - (BOOL)gestureRecognizerShouldBegin:(UIPanGestureRecognizer *)g {
-    if (!gEnabled || gDisabledHard) return NO;
-    if (self.window && !self.window.hidden) return NO;
-    // Only on the home screen, not over a running app.
-    Class home = objc_getClass("NXSBHome");
-    UIViewController *top = g.view.window.rootViewController;
-    while (top.presentedViewController) top = top.presentedViewController;
-    if (home && top && [NSStringFromClass(top.class) containsString:@"Switcher"]) return NO;
-    CGPoint v = [g velocityInView:g.view];
-    return v.y > 0 && v.y > fabs(v.x) * 1.5;
+    if (!gEnabled || gDisabledHard || self.open) return NO;
+    CGPoint v = [g velocityInView:g.view], t = [g translationInView:g.view];
+    return (v.y > 0 && v.y > fabs(v.x) * 1.2) || (t.y > 0 && t.y > fabs(t.x) * 1.2);
+}
+
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)g shouldReceiveTouch:(UITouch *)touch {
+    return !(self.panel && !self.panel.view.hidden && [touch.view isDescendantOfView:self.panel.view]);
 }
 
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)g shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)o {
-    return NO;
-}
-
-- (BOOL)gestureRecognizer:(UIGestureRecognizer *)g shouldBeRequiredToFailByGestureRecognizer:(UIGestureRecognizer *)o {
-    // Win against home-screen scroll views for vertical pulls.
-    return [o.view isKindOfClass:UIScrollView.class];
+    return YES; // never block the home screen's own recognizers
 }
 
 - (void)pan:(UIPanGestureRecognizer *)g {
@@ -499,19 +516,23 @@ static LQSJailedController *gJailed;
         CGFloat t = [g translationInView:g.view].y, v = [g velocityInView:g.view].y;
         switch (g.state) {
             case UIGestureRecognizerStateBegan:
-                if (![self ensurePanel:g.view.window]) return;
+                if (![self ensurePanelIn:g.view.window ?: (UIWindow *)g.view]) return;
                 self.panel.notificationsMode = NO;
-                self.window.hidden = NO;
+                self.panel.view.hidden = NO;
                 [self.panel setPresentationProgress:0 interactive:YES];
+                NLog(@"jailed: pull began");
                 break;
             case UIGestureRecognizerStateChanged:
+                if (self.panel.view.hidden) return;
                 [self.panel setPresentationProgress:MAX(0, MIN(1, t / (h * 0.45))) interactive:YES];
                 break;
             case UIGestureRecognizerStateEnded:
             case UIGestureRecognizerStateCancelled:
             case UIGestureRecognizerStateFailed: {
-                BOOL open = g.state == UIGestureRecognizerStateEnded && (v > 300 || (t > h * 0.15 && v > -300));
-                if (open) [self.panel setPresentationProgress:1 interactive:NO];
+                if (!self.panel || self.panel.view.hidden) return;
+                BOOL open = v > 250 || (t > h * 0.12 && v > -250);
+                NLog(@"jailed: pull ended state=%ld t=%.0f v=%.0f -> %@", (long)g.state, t, v, open ? @"open" : @"close");
+                if (open) { self.open = YES; [self.panel setPresentationProgress:1 interactive:NO]; }
                 else [self panelRequestsDismiss:self.panel];
                 break;
             }
@@ -519,26 +540,23 @@ static LQSJailedController *gJailed;
         }
     } @catch (NSException *e) {
         HardDisable([NSString stringWithFormat:@"jailed gesture exception %@", e]);
-        self.window.hidden = YES;
+        self.panel.view.hidden = YES;
     }
 }
 
 - (void)present {
-    UIWindow *key = nil;
-    for (UIWindow *w in AllWindows()) if (w.isKeyWindow) key = w;
-    if (![self ensurePanel:key ?: AllWindows().firstObject]) return;
-    self.window.hidden = NO;
+    if (![self ensurePanelIn:[self bestWindow]]) return;
+    self.panel.view.hidden = NO;
+    self.open = YES;
     [self.panel setPresentationProgress:1 interactive:NO];
 }
 
 - (void)panelRequestsDismiss:(LQSPanelViewController *)panel {
-    if (!self.window || self.window.hidden) return;
+    if (!self.panel || self.panel.view.hidden) return;
+    self.open = NO;
     [self.panel setPresentationProgress:0 interactive:NO];
-    LQSJailedWindow *w = self.window;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        if (w.hidden) return;
-        // Hide only if nothing reopened it meanwhile.
-        if ([[self.panel valueForKey:@"_progress"] doubleValue] <= 0.001) w.hidden = YES;
+        if (!self.open) self.panel.view.hidden = YES;
     });
 }
 
@@ -557,6 +575,7 @@ static void SetupJailed(void) {
     [[NSNotificationCenter defaultCenter] addObserverForName:UIWindowDidBecomeVisibleNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) { JailedAttachAll(); }];
     [[NSNotificationCenter defaultCenter] addObserverForName:UIWindowDidBecomeKeyNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) { JailedAttachAll(); }];
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 1 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ JailedAttachAll(); });
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 4 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ JailedAttachAll(); if (gEnabled) [gJailed prewarm]; });
 }
 
 static BOOL IsJailedSpringBoard(void) {
