@@ -24,20 +24,7 @@ App Library, Today View, widgets/Smart Stacks, editing and open folders are excl
 - Theos with the iOS 16.5 SDK.
 - Deployment target: iOS 15.0. The SDK version is not the minimum supported OS; optional private APIs are resolved at runtime.
 - `LineageQS/build.sh` builds the tweak.
-- On x86_64 Linux, `bash scripts/build-linux.sh` downloads the iOS toolchain recommended by Theos into `.build-tools/` without sudo (~620 MB download). To reuse an existing toolchain, set `SDKBINPATH` to its `bin` directory. It then builds pinned [allemande](https://github.com/p0358/allemande), statically converts the arm64e Obj-C ABI, and re-signs the packaged binaries. No system-wide `oldabi` dependency is needed; arm64e runtime testing is still required.
 - `host/build-sim.sh` builds a simulator preview app.
-
-## Verification
-
-Run the portable footer/safe-area regression checks with:
-
-```sh
-cc -std=c11 tests/panel_layout.c -lm -o /tmp/lqs-layout
-/tmp/lqs-layout
-```
-
-See [0.4.14 changes and on-device checks](docs/fixes-0.4.14.md) for the
-remaining iOS 15/16 runtime verification.
 
 ## Safety
 - Off by default.
