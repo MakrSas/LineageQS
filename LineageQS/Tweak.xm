@@ -425,7 +425,10 @@ static NSArray<UIWindow *> *AllWindows(void) {
 @property (nonatomic, strong) LQSPanelViewController *panel;
 @property (nonatomic, weak) UIWindow *host;
 @property (nonatomic) BOOL open;
-@property (nonatomic, strong) UIImageView *blur;
+@property (nonatomic, strong) UIVisualEffectView *blur;
+@property (nonatomic, strong) UIViewPropertyAnimator *blurAnimator;
+@property (nonatomic, strong) CADisplayLink *blurLink;
+@property (nonatomic, copy) void (^blurTick)(void);
 @end
 
 static LQSJailedController *gJailed;
@@ -452,7 +455,7 @@ static LQSJailedController *gJailed;
         LQSStringsSetDirectory([root stringByAppendingPathComponent:@"strings"]);
         LQSPanelViewController *panel = [LQSPanelViewController new];
         panel.delegate = self;
-        panel.ownBackdrop = NO; // UIVisualEffectView renders as a flat tint here; captureBlur supplies the blur
+        panel.ownBackdrop = NO; // its blur sits under a view whose alpha changes, which breaks the effect; captureBlur supplies it
         [panel loadViewIfNeeded];
         panel.view.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
         panel.view.hidden = YES;
@@ -476,56 +479,55 @@ static LQSJailedController *gJailed;
     return YES;
 }
 
-// UIVisualEffectView does not render in the jailed SpringBoard: blur a snapshot
-// of the home screen instead (taken while the panel is hidden).
+// Blur behind the shade, done the way the jailed SpringBoard's own Control
+// Center does it: a UIVisualEffectView whose effect is animated from nil to a
+// blur by a paused UIViewPropertyAnimator, scrubbed with the pull progress.
+// Its alpha (and its parents') is never changed: that breaks the effect.
 - (void)captureBlur {
     UIWindow *host = self.host;
     if (!host) return;
     if (!self.blur) {
-        self.blur = [UIImageView new];
-        self.blur.contentMode = UIViewContentModeScaleAspectFill;
-        self.blur.clipsToBounds = YES;
-        self.blur.userInteractionEnabled = NO;
-        self.blur.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        UIVisualEffectView *v = [[UIVisualEffectView alloc] initWithEffect:nil];
+        v.userInteractionEnabled = NO;
+        v.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        self.blur = v;
     }
-    BOOL wasHidden = self.panel.view.hidden;
-    self.panel.view.hidden = YES;
-    self.blur.hidden = YES;
-    CGSize sz = host.bounds.size;
-    CGFloat scale = 0.125; // small snapshot: cheap, and a heavy blur needs no detail
-    UIGraphicsImageRendererFormat *fmt = [UIGraphicsImageRendererFormat preferredFormat];
-    fmt.scale = scale;
-    UIImage *shot = [[[UIGraphicsImageRenderer alloc] initWithSize:sz format:fmt] imageWithActions:^(UIGraphicsImageRendererContext *c) {
-        [host drawViewHierarchyInRect:host.bounds afterScreenUpdates:NO];
-    }];
-    self.panel.view.hidden = wasHidden;
-    // Android 17 shade: heavy blur of what is behind (about 60 pt here), so only
-    // soft colour washes remain.
-    CIImage *in = [CIImage imageWithCGImage:shot.CGImage];
-    CIFilter *f = [CIFilter filterWithName:@"CIGaussianBlur"];
-    [f setValue:[in imageByClampingToExtent] forKey:kCIInputImageKey];
-    [f setValue:@(60 * scale * UIScreen.mainScreen.scale / 2) forKey:kCIInputRadiusKey];
-    CIFilter *f2 = [CIFilter filterWithName:@"CIGaussianBlur"]; // second pass: smooth, no blocky edges
-    [f2 setValue:f.outputImage forKey:kCIInputImageKey];
-    [f2 setValue:@(60 * scale * UIScreen.mainScreen.scale / 2) forKey:kCIInputRadiusKey];
-    static CIContext *ctx;
-    if (!ctx) ctx = [CIContext contextWithOptions:nil];
-    CGImageRef cg = [ctx createCGImage:f2.outputImage fromRect:in.extent];
-    self.blur.image = cg ? [UIImage imageWithCGImage:cg] : shot;
-    if (cg) CGImageRelease(cg);
     self.blur.frame = host.bounds;
-    if (self.blur.superview != host) [host insertSubview:self.blur belowSubview:self.panel.view];
-    else [host insertSubview:self.blur belowSubview:self.panel.view];
-    self.blur.alpha = 0;
+    [host insertSubview:self.blur belowSubview:self.panel.view];
     self.blur.hidden = NO;
+    [self.blurLink invalidate];
+    self.blurLink = nil;
+    [self.blurAnimator stopAnimation:YES];
+    self.blur.effect = nil;
+    UIVisualEffectView *v = self.blur;
+    self.blurAnimator = [[UIViewPropertyAnimator alloc] initWithDuration:1 curve:UIViewAnimationCurveLinear animations:^{
+        v.effect = [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThinMaterial];
+    }];
+    self.blurAnimator.pausesOnCompletion = YES;
+    [self.blurAnimator pauseAnimation];
+    self.blurAnimator.fractionComplete = 0;
 }
 
 - (void)setBlurAlpha:(CGFloat)a animated:(BOOL)animated {
-    if (!self.blur) return;
-    void (^b)(void) = ^{ self.blur.alpha = a; };
-    if (animated) [UIView animateWithDuration:0.3 delay:0 options:UIViewAnimationOptionBeginFromCurrentState animations:b completion:nil];
-    else b();
+    UIViewPropertyAnimator *an = self.blurAnimator;
+    if (!an) return;
+    a = MAX(0.001, MIN(1, a));
+    [self.blurLink invalidate];
+    self.blurLink = nil;
+    if (!animated) { an.fractionComplete = a; return; }
+    CGFloat from = an.fractionComplete;
+    CFTimeInterval start = CACurrentMediaTime();
+    __weak typeof(self) ws = self;
+    self.blurTick = ^{
+        CGFloat f = MIN(1, (CACurrentMediaTime() - start) / 0.3);
+        an.fractionComplete = from + (a - from) * (1 - pow(1 - f, 3));
+        if (f >= 1) { [ws.blurLink invalidate]; ws.blurLink = nil; }
+    };
+    self.blurLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(blurStep)];
+    [self.blurLink addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
 }
+
+- (void)blurStep { if (self.blurTick) self.blurTick(); }
 
 - (void)prewarm {
     UIWindow *w = [self bestWindow];
@@ -615,7 +617,7 @@ static LQSJailedController *gJailed;
     [self.panel setPresentationProgress:0 interactive:NO];
     [self setBlurAlpha:0 animated:YES];
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        if (!self.open) { self.panel.view.hidden = YES; self.blur.hidden = YES; self.blur.image = nil; }
+        if (!self.open) { self.panel.view.hidden = YES; self.blur.hidden = YES; }
     });
 }
 
