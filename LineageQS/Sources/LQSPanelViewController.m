@@ -770,7 +770,11 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
         scroll.contentOffset = CGPointMake(0, scroll.contentOffset.y * remaining);
     }
     if (_q < 0.999 && _page != 0 && !_pageLink) _page = 0; // QQS always shows page 0
-    [self layoutAll];
+    [UIView performWithoutAnimation:^{
+        [self layoutAll];
+        [self->_content layoutIfNeeded];
+        [self->_notificationArea layoutIfNeeded];
+    }];
 }
 
 // QS fling: click 368 ms TOUCH_RESPONSE (0.3,0,0.1,1); otherwise FlingAnimationUtils
@@ -899,13 +903,22 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
         case UIGestureRecognizerStateBegan:
             [_qLink invalidate];
             _qLink = nil;
-            [_settleLink invalidate];
-            _settleLink = nil;
+            // Expanding QS must not freeze an unfinished whole-shade opening.
+            // A closing settle is interrupted as before; an opening settle
+            // continues alongside q until a whole-shade closing drag takes over.
+            if (_settleLink && _settleTo <= _progress) {
+                [_settleLink invalidate]; _settleLink = nil;
+            }
             _qStart = _q;
             _pStart = _progress;
             break;
         case UIGestureRecognizerStateChanged:
             if (_qStart <= 0.001 && dy < 0) {
+                if (_settleLink) {
+                    _pStart = _progress - dy / MAX(1, self.view.bounds.size.height);
+                    [_settleLink invalidate]; _settleLink = nil;
+                    [_content.layer removeAnimationForKey:@"overshoot"];
+                }
                 // Collapsing from QQS closes the whole shade: follow the finger, the native CC
                 // dismissal finishes it on release.
                 [self applyPresentationProgress:LQSShadeDragProgress(_pStart, dy, self.view.bounds.size.height)];
@@ -944,8 +957,9 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
             _pStart = _progress;
             [_qLink invalidate];
             _qLink = nil;
-            [_settleLink invalidate];
-            _settleLink = nil;
+            if (_settleLink && _settleTo <= _progress) {
+                [_settleLink invalidate]; _settleLink = nil;
+            }
             break;
         case UIGestureRecognizerStateChanged: {
             if (!_listDecided && fabs(ty) > 2) {
@@ -953,7 +967,12 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
                 // list is already at its end closes the shade. Reaching the end mid-scroll does not.
                 _listDecided = YES;
                 if (sv.contentOffset.y <= 0.5 && ty > 0 && _q < 0.05) { _listMode = 1; _listModeY = ty; _qStart = _q; }
-                else if (sv.contentOffset.y >= maxOff - 0.5 && ty < 0 && _q < 0.05) { _listMode = 2; _listModeY = ty; }
+                else if (sv.contentOffset.y >= maxOff - 0.5 && ty < 0 && _q < 0.05) {
+                    _listMode = 2; _listModeY = ty;
+                    _pStart = _progress;
+                    [_settleLink invalidate]; _settleLink = nil;
+                    [_content.layer removeAnimationForKey:@"overshoot"];
+                }
             }
             if (_listMode == 1) {
                 sv.contentOffset = CGPointZero; // no rubber band while the panel is expanding
