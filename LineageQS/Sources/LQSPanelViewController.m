@@ -804,6 +804,7 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
     if (!interactive && _settleLink && fabs(progress - _settleTo) < 0.001) return;
     if (interactive || fabs(progress - _progress) < 0.001) {
         [_settleLink invalidate]; _settleLink = nil;
+        if (interactive) [_content.layer removeAnimationForKey:@"overshoot"];
         [UIView performWithoutAnimation:^{ [self applyPresentationProgress:progress]; }];
         return;
     }
@@ -855,6 +856,11 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
     if (_editor) _content.alpha = 0;
     if (p <= 0.001 && _q > 0) { [_qLink invalidate]; _qLink = nil; _state = LQSPanelStateCompact; _page = 0; [self setQ:0]; }
     else [self layoutAll];
+    // Tile/row bounds above schedule nested label layout. Commit that geometry
+    // inside this progress tick's performWithoutAnimation, not later inside a
+    // native presenter animation transaction (which makes text catch up/snap).
+    [_content layoutIfNeeded];
+    [_notificationArea layoutIfNeeded];
 }
 
 - (void)backdropTapped {

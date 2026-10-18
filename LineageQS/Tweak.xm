@@ -34,6 +34,7 @@
 @interface SBGrabberTongue : NSObject
 @end
 @interface SBCoverSheetSlidingViewController : UIViewController
+- (BOOL)_isPresentingInterstitialForGestureRecognizer:(UIGestureRecognizer *)gesture;
 @end
 @interface SBControlCenterController : NSObject
 + (instancetype)sharedInstanceIfExists;
@@ -585,6 +586,11 @@ static BOOL RouteTopGesture(UIPanGestureRecognizer *g) {
         // Status-bar activity taps can use this path too. Only claim real
         // downward pans; a tap on the red recording pill belongs to iOS.
         if (![g isKindOfClass:UIPanGestureRecognizer.class]) { %orig; return; }
+        // Let CoverSheet own the entire first, edge-protected swipe. It shows
+        // the native grabber and manages its lifetime; only the subsequent
+        // non-interstitial gesture may be routed to our Control Center.
+        if ([self respondsToSelector:@selector(_isPresentingInterstitialForGestureRecognizer:)] &&
+            [self _isPresentingInterstitialForGestureRecognizer:g]) { %orig; return; }
         CGPoint location, translation, velocity;
         MirrorForOverlay(g, &location, &translation, &velocity);
         CGFloat down = -translation.y, downVelocity = -velocity.y;

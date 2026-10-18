@@ -248,9 +248,14 @@ static void Fade(UILabel *l, CAGradientLayer *__strong *mask) {
         (*mask).endPoint = CGPointMake(1, 0.5);
         (*mask).colors = @[(id)UIColor.blackColor.CGColor, (id)UIColor.blackColor.CGColor, (id)UIColor.clearColor.CGColor];
     }
+    // This standalone layer otherwise animates its bounds/position implicitly
+    // while the label follows the shade, then catches up after the last frame.
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
     (*mask).frame = l.bounds;
     (*mask).locations = @[@0, @(MAX(0, (w - 32) / w)), @1];
     l.layer.mask = *mask;
+    [CATransaction commit];
 }
 
 - (void)layoutSubviews {
