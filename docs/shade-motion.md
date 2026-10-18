@@ -394,17 +394,23 @@ Sources (LineageOS 24):
 ## QQS-to-QS visual transition update
 
 The port now uses `FromQuickQuickSettingsToQuickSettings`, not the separate
-shade-to-QS transition's 0.95 fade endpoint. QS-only tiles and brightness fade
+shade-to-QS transition's 0.95 fade endpoint. QS-only tiles fade
 over 0.43–1; shared first-page tiles remain opaque and interpolate their layout
 bounds without scaling glyphs. For this fixed-column layout, the shared tile
 positions are equivalent to the interpolated `GridAnchor` position.
 
 Entering QS content uses `(1-q) * (qqsGridTop-qsGridTop)` as its translation,
-following `AnchoredTranslate`. Brightness and the pager/Edit row use that same
-anchor delta instead of independent 40pt slides. The pager/Edit row belongs to
+following `AnchoredTranslate`. The pager/Edit row uses that same
+anchor delta instead of an independent 40pt slide. The pager/Edit row belongs to
 `QuickSettingsContent`, so it shares the 0.43–1 fade. Settings/Power belong to
 `FooterActions`: they remain bottom-anchored and fade over 0.9–1. Final safe-area
 spacing, tile sizes and activated radii are unchanged.
+
+At the contributor's request, brightness alone retains the original
+MakrSas/LineageQS animation: `qsBrightnessTop - (1-q)*40` and a linear fade over
+0.43–0.95. This is an intentional exception to the newer QS content transition,
+not a port of the legacy Android slider-scale/unfurl animation. No other QS
+motion is reverted.
 
 When collapsing a non-first page, keep the outgoing page in place horizontally
 and fade its QS content while separate, noninteractive QQS counterparts fade

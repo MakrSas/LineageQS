@@ -676,10 +676,10 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
 
     CGFloat qsOffset = LQSAnchoredQSOffset(q, [self qqsTop], [self qsGridTop]);
     CGFloat qsAlpha = LQSExpansionContentAlpha(q);
-    // No QQS slider in this layout: brightness inherits entering QSContent's
-    // GridAnchor translation and fade, not a separate 40pt animation.
-    _brightness.frame = CGRectMake(inset, [self qsBrightnessTop] + qsOffset, w - 2 * inset, [self brightnessHeight]);
-    _brightness.alpha = qsAlpha;
+    // Original MakrSas/LineageQS brightness animation; intentionally independent
+    // of the newer grid-anchored QS content transition.
+    _brightness.frame = CGRectMake(inset, [self qsBrightnessTop] - (1 - q) * 40, w - 2 * inset, [self brightnessHeight]);
+    _brightness.alpha = Range(q, 0.43, 0.95);
     _brightness.userInteractionEnabled = q > 0.95;
 
     // Keep the drawing viewport full-height. Interpolating its clipping edge
