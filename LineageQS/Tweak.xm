@@ -38,6 +38,10 @@
 - (CGAffineTransform)_transformForTongueContainer;
 - (CGRect)_chevronFrameForTongueBounds:(CGRect)bounds;
 @end
+@interface MTMaterialView : UIView
+- (void)setWeighting:(double)weighting;
+- (BOOL)_shouldAnimatePropertyWithKey:(id)key;
+@end
 @interface SBCoverSheetPrimarySlidingViewController : UIViewController
 @end
 @interface SBControlCenterController : NSObject
@@ -59,6 +63,13 @@ static BOOL gEnabled;           // master switch (live)
 static BOOL gDisabledHard;      // kill switch / crash guard / exception
 static __weak CCUIModularControlCenterOverlayViewController *gOverlay;
 static LQSPanelViewController *gPanel;
+static __weak UIView *gControlledMaterial;
+static double gMaterialProgress;
+
+static BOOL ControlsMaterialWeighting(id view) {
+    return gEnabled && !gDisabledHard && gPanel &&
+        gPanel.parentViewController == gOverlay && view == gControlledMaterial;
+}
 
 static void NLog(NSString *format, ...) {
     va_list args;
@@ -101,6 +112,12 @@ static void SetSystemBackdropProgress(UIViewController *overlay, CGFloat progres
     UIView *background = IvarValue(overlay, "_backgroundView");
     if (![background isKindOfClass:UIView.class]) return;
     CGFloat p = MAX(0, MIN(1, progress));
+    if (gPanel && gPanel.parentViewController == overlay) {
+        gControlledMaterial = background;
+        gMaterialProgress = p;
+    } else if (gControlledMaterial == background) {
+        gControlledMaterial = nil;
+    }
     [UIView performWithoutAnimation:^{
         [CATransaction begin];
         [CATransaction setDisableActions:YES];
@@ -121,11 +138,36 @@ static void SetSystemBackdropProgress(UIViewController *overlay, CGFloat progres
         } @catch (__unused NSException *e) { }
         // Native opacity animations must not compete with finger-driven alpha.
         [background.layer removeAnimationForKey:@"opacity"];
+        [background.layer removeAnimationForKey:@"weighting"];
         background.alpha = weighted ? 1 : p;
         background.hidden = p <= 0.001;
         [CATransaction commit];
     }];
 }
+
+%group LQSMaterialWeighting
+%hook MTMaterialView
+- (void)setWeighting:(double)weighting {
+    if (!ControlsMaterialWeighting(self)) { %orig; return; }
+    // Native animation runners can write after our gesture callback returns.
+    // The material must retain the last visual sample even while the finger
+    // is stationary, rather than briefly following the native runner's target.
+    [UIView performWithoutAnimation:^{
+        [CATransaction begin];
+        [CATransaction setDisableActions:YES];
+        %orig(gMaterialProgress);
+        [self.layer removeAnimationForKey:@"weighting"];
+        [CATransaction commit];
+    }];
+}
+- (BOOL)_shouldAnimatePropertyWithKey:(id)key {
+    // The shade's display link / interactive samples already provide motion.
+    // MTMaterialView's extra property animation otherwise continues on hold.
+    if (ControlsMaterialWeighting(self)) return NO;
+    return %orig;
+}
+%end
+%end
 
 // Native views replaced by the panel. Their own alpha animations keep
 // running; we only force hidden while our panel is installed.
@@ -868,6 +910,20 @@ static void RegisterDarwin(NSString *name, void (^block)(void)) {
         NLog(@"loaded: enabled=%d iOS=%@", gEnabled, UIDevice.currentDevice.systemVersion);
         [LQSBackends prepare];
         %init;
+        // Guard this private scalar hook's ABI; other materials and unsupported
+        // signatures retain native behavior and the existing alpha fallback.
+        Method weighting = class_getInstanceMethod(objc_getClass("MTMaterialView"), @selector(setWeighting:));
+        Method shouldAnimate = class_getInstanceMethod(objc_getClass("MTMaterialView"), @selector(_shouldAnimatePropertyWithKey:));
+        char argumentType[16] = {0};
+        char returnType[16] = {0}, animationReturnType[16] = {0};
+        if (weighting && shouldAnimate && method_getNumberOfArguments(weighting) == 3 &&
+            method_getNumberOfArguments(shouldAnimate) == 3) {
+            method_getArgumentType(weighting, 2, argumentType, sizeof(argumentType));
+            method_getReturnType(weighting, returnType, sizeof(returnType));
+            method_getReturnType(shouldAnimate, animationReturnType, sizeof(animationReturnType));
+            if (argumentType[0] == 'd' && returnType[0] == 'v' &&
+                (animationReturnType[0] == 'B' || animationReturnType[0] == 'c')) { %init(LQSMaterialWeighting); }
+        }
         ReloadGesturePrefs();
 
         RegisterDarwin(LQSPrefsChangedNotification, ^{ ReloadPrefs(); });
