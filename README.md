@@ -1,6 +1,6 @@
 # LineageQS
 
-The Android 17 (LineageOS 24) notification shade and Quick Settings for jailbroken iOS 15/16 (rootless, device-tested on iPhone 8, iOS 16.7; iOS 15 runtime validation still needed).
+The Android 17 (LineageOS 24) notification shade and Quick Settings for jailbroken iOS 15/16 (rootless, device-tested on iPhone 8, iOS 16.7, and iPhone SE (2016), iOS 15.8.2).
 It replaces the Control Center view, and a swipe from the top opens it.
 
 - Quick Quick Settings with notifications below; drag down to expand into full Quick Settings, which add brightness, a paged grid and footer actions.
@@ -12,13 +12,6 @@ It replaces the Control Center view, and a swipe from the top opens it.
 - Colours from [Material You](https://github.com/MakrSas/MaterialYou) (required package).
 
 Visual tokens, animations and behaviour come from the AOSP / LineageOS sources. Values are referenced in comments, `docs/` lists the research.
-
-## Home Screen gesture
-
-Settings > LineageQS > Gestures > **Home Screen swipe down opens notifications**
-is off by default and applies immediately. When enabled, a downward drag on an
-icon page opens compact notifications interactively instead of Spotlight.
-App Library, Today View, widgets/Smart Stacks, editing and open folders are excluded.
 
 ## Build
 - Theos with the iOS 16.5 SDK.
