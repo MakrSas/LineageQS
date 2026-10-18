@@ -1,6 +1,6 @@
 Package: com.makr.lineageqs
 Name: [roothide] LineageQS
-Version: 0.4.16
+Version: 0.4.17
 Architecture: iphoneos-arm64
 Description: LineageOS 24 / Android 17 notification shade and quick settings for iOS 16.
 Maintainer: makr

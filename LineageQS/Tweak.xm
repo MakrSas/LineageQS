@@ -452,7 +452,7 @@ static LQSJailedController *gJailed;
         LQSStringsSetDirectory([root stringByAppendingPathComponent:@"strings"]);
         LQSPanelViewController *panel = [LQSPanelViewController new];
         panel.delegate = self;
-        panel.ownBackdrop = YES;
+        panel.ownBackdrop = NO; // UIVisualEffectView renders as a flat tint here; captureBlur supplies the blur
         [panel loadViewIfNeeded];
         panel.view.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
         panel.view.hidden = YES;
@@ -492,20 +492,25 @@ static LQSJailedController *gJailed;
     self.panel.view.hidden = YES;
     self.blur.hidden = YES;
     CGSize sz = host.bounds.size;
-    CGFloat scale = 0.25; // small snapshot: cheap and blurs better
+    CGFloat scale = 0.125; // small snapshot: cheap, and a heavy blur needs no detail
     UIGraphicsImageRendererFormat *fmt = [UIGraphicsImageRendererFormat preferredFormat];
     fmt.scale = scale;
     UIImage *shot = [[[UIGraphicsImageRenderer alloc] initWithSize:sz format:fmt] imageWithActions:^(UIGraphicsImageRendererContext *c) {
         [host drawViewHierarchyInRect:host.bounds afterScreenUpdates:NO];
     }];
     self.panel.view.hidden = wasHidden;
+    // Android 17 shade: heavy blur of what is behind (about 60 pt here), so only
+    // soft colour washes remain.
     CIImage *in = [CIImage imageWithCGImage:shot.CGImage];
     CIFilter *f = [CIFilter filterWithName:@"CIGaussianBlur"];
     [f setValue:[in imageByClampingToExtent] forKey:kCIInputImageKey];
-    [f setValue:@(30 * scale * 1.5) forKey:kCIInputRadiusKey];
+    [f setValue:@(60 * scale * UIScreen.mainScreen.scale / 2) forKey:kCIInputRadiusKey];
+    CIFilter *f2 = [CIFilter filterWithName:@"CIGaussianBlur"]; // second pass: smooth, no blocky edges
+    [f2 setValue:f.outputImage forKey:kCIInputImageKey];
+    [f2 setValue:@(60 * scale * UIScreen.mainScreen.scale / 2) forKey:kCIInputRadiusKey];
     static CIContext *ctx;
     if (!ctx) ctx = [CIContext contextWithOptions:nil];
-    CGImageRef cg = [ctx createCGImage:f.outputImage fromRect:in.extent];
+    CGImageRef cg = [ctx createCGImage:f2.outputImage fromRect:in.extent];
     self.blur.image = cg ? [UIImage imageWithCGImage:cg] : shot;
     if (cg) CGImageRelease(cg);
     self.blur.frame = host.bounds;
