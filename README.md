@@ -1,6 +1,6 @@
 # LineageQS
 
-The Android 17 (LineageOS 24) notification shade and Quick Settings for jailbroken iOS 15/16 (rootless, device-tested on iPhone 8, iOS 16.7, and iPhone SE (2016), iOS 15.8.2).
+The Android 17 (LineageOS 24) notification shade and Quick Settings for jailbroken iOS 15/16 (rootless, device-tested on iPhone 8, iOS 16.7; iPhone SE (2016), iOS 15.8.2).
 It replaces the Control Center view, and a swipe from the top opens it.
 
 - Quick Quick Settings with notifications below; drag down to expand into full Quick Settings, which add brightness, a paged grid and footer actions.
