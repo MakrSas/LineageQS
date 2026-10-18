@@ -38,6 +38,15 @@ typedef NS_ENUM(NSInteger, LQSColorsMode) { LQSColorsModeLanding, LQSColorsModeF
 @property (nonatomic, strong) UIColor *thumbColor;
 @end
 
+#import <dlfcn.h>
+// roothide / Nyxian jailed: processes may not share /var/mobile, so the theme is
+// mirrored under the jailbreak root, which every process sees.
+static NSString *MYJBThemePath(void) {
+    const char *(*jbroot)(const char *) = (const char *(*)(const char *))dlsym(RTLD_DEFAULT, "jbroot");
+    const char *r = jbroot ? jbroot("/var/mobile/Library/MaterialYou/theme.json") : NULL;
+    return r ? @(r) : nil;
+}
+
 @implementation LQSHueSlider {
     CAGradientLayer *_left, *_right;
     CAShapeLayer *_leftMask, *_rightMask;
@@ -674,6 +683,11 @@ static UIBezierPath *Track(CGRect r, CGFloat outer, CGFloat inner, BOOL left) {
     NSData *d = [NSJSONSerialization dataWithJSONObject:t options:0 error:nil];
     [[NSFileManager defaultManager] createDirectoryAtPath:[self.themePath stringByDeletingLastPathComponent] withIntermediateDirectories:YES attributes:nil error:nil];
     [d writeToFile:self.themePath atomically:YES];
+    NSString *jb = MYJBThemePath();
+    if (jb && ![jb isEqualToString:self.themePath]) {
+        [[NSFileManager defaultManager] createDirectoryAtPath:[jb stringByDeletingLastPathComponent] withIntermediateDirectories:YES attributes:nil error:nil];
+        [d writeToFile:jb atomically:YES];
+    }
     notify_post(LQSThemeChangedNotification.UTF8String);
     _savedSeeds = _seeds; _savedStyle = _style; _savedSource = _source;
     [self recompute];

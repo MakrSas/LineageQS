@@ -425,6 +425,7 @@ static NSArray<UIWindow *> *AllWindows(void) {
 @property (nonatomic, strong) LQSPanelViewController *panel;
 @property (nonatomic, weak) UIWindow *host;
 @property (nonatomic) BOOL open;
+@property (nonatomic, strong) UIImageView *blur;
 @end
 
 static LQSJailedController *gJailed;
@@ -469,9 +470,56 @@ static LQSJailedController *gJailed;
     }
     v.frame = host.bounds;
     [host bringSubviewToFront:v];
+    if (self.blur.superview == host) [host insertSubview:self.blur belowSubview:v];
     [v setNeedsLayout];
     [v layoutIfNeeded];
     return YES;
+}
+
+// UIVisualEffectView does not render in the jailed SpringBoard: blur a snapshot
+// of the home screen instead (taken while the panel is hidden).
+- (void)captureBlur {
+    UIWindow *host = self.host;
+    if (!host) return;
+    if (!self.blur) {
+        self.blur = [UIImageView new];
+        self.blur.contentMode = UIViewContentModeScaleAspectFill;
+        self.blur.clipsToBounds = YES;
+        self.blur.userInteractionEnabled = NO;
+        self.blur.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    }
+    BOOL wasHidden = self.panel.view.hidden;
+    self.panel.view.hidden = YES;
+    self.blur.hidden = YES;
+    CGSize sz = host.bounds.size;
+    CGFloat scale = 0.25; // small snapshot: cheap and blurs better
+    UIGraphicsImageRendererFormat *fmt = [UIGraphicsImageRendererFormat preferredFormat];
+    fmt.scale = scale;
+    UIImage *shot = [[[UIGraphicsImageRenderer alloc] initWithSize:sz format:fmt] imageWithActions:^(UIGraphicsImageRendererContext *c) {
+        [host drawViewHierarchyInRect:host.bounds afterScreenUpdates:NO];
+    }];
+    self.panel.view.hidden = wasHidden;
+    CIImage *in = [CIImage imageWithCGImage:shot.CGImage];
+    CIFilter *f = [CIFilter filterWithName:@"CIGaussianBlur"];
+    [f setValue:[in imageByClampingToExtent] forKey:kCIInputImageKey];
+    [f setValue:@(30 * scale * 1.5) forKey:kCIInputRadiusKey];
+    static CIContext *ctx;
+    if (!ctx) ctx = [CIContext contextWithOptions:nil];
+    CGImageRef cg = [ctx createCGImage:f.outputImage fromRect:in.extent];
+    self.blur.image = cg ? [UIImage imageWithCGImage:cg] : shot;
+    if (cg) CGImageRelease(cg);
+    self.blur.frame = host.bounds;
+    if (self.blur.superview != host) [host insertSubview:self.blur belowSubview:self.panel.view];
+    else [host insertSubview:self.blur belowSubview:self.panel.view];
+    self.blur.alpha = 0;
+    self.blur.hidden = NO;
+}
+
+- (void)setBlurAlpha:(CGFloat)a animated:(BOOL)animated {
+    if (!self.blur) return;
+    void (^b)(void) = ^{ self.blur.alpha = a; };
+    if (animated) [UIView animateWithDuration:0.3 delay:0 options:UIViewAnimationOptionBeginFromCurrentState animations:b completion:nil];
+    else b();
 }
 
 - (void)prewarm {
@@ -518,6 +566,7 @@ static LQSJailedController *gJailed;
             case UIGestureRecognizerStateBegan:
                 if (![self ensurePanelIn:g.view.window ?: (UIWindow *)g.view]) return;
                 self.panel.notificationsMode = NO;
+                @try { [self captureBlur]; } @catch (NSException *e) { NLog(@"jailed blur exception %@", e); }
                 self.panel.view.hidden = NO;
                 [self.panel setPresentationProgress:0 interactive:YES];
                 NLog(@"jailed: pull began");
@@ -525,6 +574,7 @@ static LQSJailedController *gJailed;
             case UIGestureRecognizerStateChanged:
                 if (self.panel.view.hidden) return;
                 [self.panel setPresentationProgress:MAX(0, MIN(1, t / (h * 0.45))) interactive:YES];
+                [self setBlurAlpha:MAX(0, MIN(1, t / (h * 0.45))) animated:NO];
                 break;
             case UIGestureRecognizerStateEnded:
             case UIGestureRecognizerStateCancelled:
@@ -532,7 +582,7 @@ static LQSJailedController *gJailed;
                 if (!self.panel || self.panel.view.hidden) return;
                 BOOL open = v > 250 || (t > h * 0.12 && v > -250);
                 NLog(@"jailed: pull ended state=%ld t=%.0f v=%.0f -> %@", (long)g.state, t, v, open ? @"open" : @"close");
-                if (open) { self.open = YES; [self.panel setPresentationProgress:1 interactive:NO]; }
+                if (open) { self.open = YES; [self.panel setPresentationProgress:1 interactive:NO]; [self setBlurAlpha:1 animated:YES]; }
                 else [self panelRequestsDismiss:self.panel];
                 break;
             }
@@ -546,18 +596,38 @@ static LQSJailedController *gJailed;
 
 - (void)present {
     if (![self ensurePanelIn:[self bestWindow]]) return;
+    @try { [self captureBlur]; } @catch (NSException *e) {}
     self.panel.view.hidden = NO;
     self.open = YES;
     [self.panel setPresentationProgress:1 interactive:NO];
+    [self setBlurAlpha:1 animated:YES];
 }
 
 - (void)panelRequestsDismiss:(LQSPanelViewController *)panel {
     if (!self.panel || self.panel.view.hidden) return;
     self.open = NO;
     [self.panel setPresentationProgress:0 interactive:NO];
+    [self setBlurAlpha:0 animated:YES];
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        if (!self.open) self.panel.view.hidden = YES;
+        if (!self.open) { self.panel.view.hidden = YES; self.blur.hidden = YES; self.blur.image = nil; }
     });
+}
+
+- (void)rebuildForTheme {
+    [LQSTheme reloadTheme];
+    if (!self.panel) return;
+    UIWindow *host = self.host;
+    BOOL wasOpen = self.open;
+    [self.panel.view removeFromSuperview];
+    self.panel = nil;
+    gPanel = nil;
+    self.open = NO;
+    if (host && [self ensurePanelIn:host]) {
+        [self.panel setPresentationProgress:wasOpen ? 1 : 0 interactive:YES];
+        self.panel.view.hidden = !wasOpen;
+        self.open = wasOpen;
+    }
+    NLog(@"jailed: theme reloaded");
 }
 
 @end
@@ -722,6 +792,8 @@ static void RegisterDarwin(NSString *name, void (^block)(void)) {
                 if (!gEnabled) [gJailed panelRequestsDismiss:gJailed.panel];
             });
             RegisterDarwin(@"com.makr.lineageqs/debug-present", ^{ [gJailed present]; });
+            RegisterDarwin(@"com.makr.materialyou/theme-changed", ^{ [gJailed rebuildForTheme]; });
+            RegisterDarwin(LQSLayoutResetNotification, ^{ [[LQSModel shared] resetLayout]; [gPanel reloadFromPreferences]; });
             return;
         }
         %init(Native);

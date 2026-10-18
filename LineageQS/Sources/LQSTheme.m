@@ -14,13 +14,25 @@ static UIColor *Hex(NSString *hex, CGFloat alpha) {
 
 // Defaults (framework-res, no seed) overlaid by the user's Material You theme
 // (<state>/theme.json, written by the Colors settings screen; same key names).
+#import <dlfcn.h>
+// roothide / Nyxian jailed: processes may not share /var/mobile, so the theme is
+// mirrored under the jailbreak root, which every process sees.
+static NSString *MYJBThemePath(void) {
+    const char *(*jbroot)(const char *) = (const char *(*)(const char *))dlsym(RTLD_DEFAULT, "jbroot");
+    const char *r = jbroot ? jbroot("/var/mobile/Library/MaterialYou/theme.json") : NULL;
+    return r ? @(r) : nil;
+}
+
 static NSString *gThemePath = @"/var/mobile/Library/MaterialYou/theme.json"; // com.makr.materialyou
 
 static NSDictionary *Colors(void) {
     if (!gColors && gRoot) {
         NSData *d = [NSData dataWithContentsOfFile:[gRoot stringByAppendingPathComponent:@"colors.json"]];
         NSMutableDictionary *m = [NSMutableDictionary dictionaryWithDictionary:(d ? [NSJSONSerialization JSONObjectWithData:d options:0 error:nil] : nil) ?: @{}];
-        NSData *t = [NSData dataWithContentsOfFile:gThemePath] ?: [NSData dataWithContentsOfFile:@"/var/mobile/Library/LineageQS/theme.json"]; // pre-1.0 location
+        NSString *tp = gThemePath, *jb = MYJBThemePath();
+        NSDate *(^mtime)(NSString *) = ^NSDate *(NSString *f) { return [[NSFileManager defaultManager] attributesOfItemAtPath:f error:nil].fileModificationDate; };
+        if (jb && mtime(jb) && (!mtime(tp) || [mtime(jb) compare:mtime(tp)] == NSOrderedDescending)) tp = jb;
+        NSData *t = [NSData dataWithContentsOfFile:tp] ?: [NSData dataWithContentsOfFile:@"/var/mobile/Library/LineageQS/theme.json"]; // pre-1.0 location
         NSDictionary *theme = t ? [NSJSONSerialization JSONObjectWithData:t options:0 error:nil] : nil;
         if ([theme[@"colors"] isKindOfClass:NSDictionary.class]) [m addEntriesFromDictionary:theme[@"colors"]];
         gColors = m;
