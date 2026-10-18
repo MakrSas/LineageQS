@@ -76,17 +76,17 @@ typedef struct {
         [_body addSubview:_bubble];
         _icon = [UIImageView new];
         _icon.contentMode = UIViewContentModeCenter;
-        // Foreground must not inherit the body's changing rounded clipping
-        // bounds during presentation. It stays unscaled and fades to fit.
-        [self addSubview:_icon];
+        // Normal-size content is centered in the changing tile layout, like
+        // verticalSquish. Opacity comes from the shade, not the tile height.
+        [_body addSubview:_icon];
         _iconTextLabel = [UILabel new];
         _iconTextLabel.font = [UIFont monospacedDigitSystemFontOfSize:22 weight:UIFontWeightSemibold];
         _iconTextLabel.textAlignment = NSTextAlignmentCenter;
         _iconTextLabel.userInteractionEnabled = NO;
-        [self addSubview:_iconTextLabel];
+        [_body addSubview:_iconTextLabel];
         _textBox = [UIView new];
         _textBox.userInteractionEnabled = NO;
-        [self addSubview:_textBox];
+        [_body addSubview:_textBox];
         _title = [UILabel new];
         _title.font = [LQSTheme tileLabelFont];
         _title.lineBreakMode = NSLineBreakByClipping;
@@ -264,7 +264,6 @@ static void Fade(UILabel *l, CAGradientLayer *__strong *mask) {
     _body.layer.cornerRadius = active ? MIN([LQSTheme radiusActive], h / 2)
         : MIN([LQSTheme radiusInactive], MIN(w, h) / 2);
     fx.layer.cornerRadius = _body.layer.cornerRadius;
-    CGFloat contentHeight = [self iconSide];
     if (self.size == LQSTileSizeSmall) {
         _bubble.hidden = YES;
         _textBox.hidden = YES;
@@ -282,7 +281,6 @@ static void Fade(UILabel *l, CAGradientLayer *__strong *mask) {
         BOOL two = _state.text.length > 0;
         CGFloat lh = 20, sh = 16; // line heights 20sp / 16sp
         CGFloat total = lh + (two ? sh : 0);
-        contentHeight = MAX(contentHeight, total);
         _textBox.frame = CGRectMake(x, (h - total) / 2, MAX(0, w - x - end), total);
         _title.frame = CGRectMake(0, 0, _textBox.bounds.size.width, lh);
         _state.frame = CGRectMake(0, lh, _textBox.bounds.size.width, sh);
@@ -291,12 +289,6 @@ static void Fade(UILabel *l, CAGradientLayer *__strong *mask) {
         Fade(_state, &_stateFade);
     }
     _iconTextLabel.frame = _icon.frame;
-    // Keep glyphs readable rather than stretching or slicing them as the
-    // body shrinks. The 8pt fade starts only once the content fits in height.
-    CGFloat foregroundAlpha = MAX(0, MIN(1, (h - contentHeight) / 8));
-    _icon.alpha = foregroundAlpha;
-    _iconTextLabel.alpha = foregroundAlpha;
-    _textBox.alpha = foregroundAlpha;
 }
 
 - (BOOL)beginTrackingWithTouch:(UITouch *)touch withEvent:(UIEvent *)event {

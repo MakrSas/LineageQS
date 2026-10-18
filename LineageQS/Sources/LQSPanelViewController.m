@@ -53,8 +53,10 @@ static CGFloat EaseInOut(CGFloat f) {
     CGFloat o = 1 - m;
     return 1 - 0.5 * (1 - cos(M_PI * o * o));
 }
-static CGFloat ContentAlpha(CGFloat f) { return EaseInOut(0.3 + 0.7 * MAX(0, MIN(1, f))); }
 static CGFloat Range(CGFloat x, CGFloat a, CGFloat b) { return MAX(0, MIN(1, (x - a) / (b - a))); }
+// ShadeInterpolation.getContentAlpha: constrainedMap(0, 1, 0.3, 1, fraction).
+// Fade QS content together; there is no separate glyph-height opacity rule.
+static CGFloat ContentAlpha(CGFloat f) { return EaseInOut(Range(f, 0.3, 1)); }
 static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
 
 @interface LQSPanelViewController () <UIGestureRecognizerDelegate>
@@ -670,8 +672,8 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
         CGFloat height = inQQS ? Lerp(rowH, [self tileHeight], q) : [self tileHeight];
         // Small tiles stay square at rest on both narrow and wide displays.
         CGFloat tileWidth = c.span == 1 ? MIN(width, [self tileHeight]) : width;
-        // Animate the actual body height. Foreground icons/labels keep their
-        // normal proportions; LQSTileView fades them when the body is too short.
+        // verticalSquish changes layout height and centers normal-size content;
+        // it does not scale glyphs or give them a separate height-based fade.
         t.squish = inQQS ? squish : 1;
         t.transform = CGAffineTransformIdentity;
         t.bounds = CGRectMake(0, 0, tileWidth, height);
