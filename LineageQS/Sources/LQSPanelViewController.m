@@ -670,14 +670,12 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
         CGFloat height = inQQS ? Lerp(rowH, [self tileHeight], q) : [self tileHeight];
         // Small tiles stay square at rest on both narrow and wide displays.
         CGFloat tileWidth = c.span == 1 ? MIN(width, [self tileHeight]) : width;
-        // Squish the whole tile, including its icon/labels, instead of shrinking
-        // the body's clipping bounds around full-size content. Use bounds and
-        // center because frame is undefined with a nonidentity transform.
-        CGFloat fullHeight = [self tileHeight];
-        t.squish = 1;
-        t.bounds = CGRectMake(0, 0, tileWidth, fullHeight);
+        // Animate the actual body height. Foreground icons/labels keep their
+        // normal proportions; LQSTileView fades them when the body is too short.
+        t.squish = inQQS ? squish : 1;
+        t.transform = CGAffineTransformIdentity;
+        t.bounds = CGRectMake(0, 0, tileWidth, height);
         t.center = CGPointMake(x + width / 2, y - clipTop + height / 2);
-        t.transform = CGAffineTransformMakeScale(1, height / MAX(1, fullHeight));
         // QS-only tiles fade in over [0.43, 0.95] (FromShadeToQuickSettingsTransition).
         t.alpha = inQQS ? 1 : Range(q, 0.43, 0.95);
         t.userInteractionEnabled = inQQS ? (q < 0.05 || q > 0.95) : q > 0.95;
