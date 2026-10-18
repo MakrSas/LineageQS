@@ -103,6 +103,7 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
     CGFloat _pageStart;
     LQSSettings *_settings;
     CGFloat _progress;      // native presentation 0...1
+    BOOL _brightnessMirroring;
     CGFloat _q;             // QQS (0) -> QS (1)
     CGFloat _qStart;
     CGFloat _pStart;
@@ -288,6 +289,25 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
     BOOL visible = _ownBackdrop && p > 0.001;
     _blur.alpha = p;
     _blur.hidden = !visible;
+}
+
+- (void)refreshPresentationBackdrop {
+    if (!self.isViewLoaded) return;
+    CGFloat p = MAX(0, MIN(1, _progress));
+    // QS layout and native material layout may run between opening ticks.
+    // Neither owns a separate opacity/progress: restore the current shade
+    // sample atomically without starting another animation on either surface.
+    [UIView performWithoutAnimation:^{
+        [CATransaction begin];
+        [CATransaction setDisableActions:YES];
+        self->_backdrop.alpha = p * (self->_brightnessMirroring ? 0.15 : 1);
+        // Scrim alpha is linear; row alpha uses ContentAlpha separately.
+        self->_notificationSurface.alpha = p;
+        [self updateBlurForProgress:p];
+        if ([self.delegate respondsToSelector:@selector(panel:didChangePresentationProgress:)])
+            [self.delegate panel:self didChangePresentationProgress:p];
+        [CATransaction commit];
+    }];
 }
 
 - (void)openSettingsURL:(NSString *)url {
@@ -576,6 +596,7 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
 }
 
 - (void)mirror:(BOOL)on {
+    _brightnessMirroring = on;
     [UIView animateWithDuration:on ? 0.15 : 0.25 delay:0 options:UIViewAnimationOptionBeginFromCurrentState animations:^{
         for (UIView *v in self->_content.subviews) if (v != self->_brightness) v.alpha = on ? 0 : 1;
         self->_notificationArea.alpha = on ? 0 : 1;
@@ -610,7 +631,7 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
     _backdrop.frame = b;
     _blur.frame = b;
     _panelColor.frame = b;
-    [self updateBlurForProgress:_progress];
+    [self refreshPresentationBackdrop];
     _content.bounds = CGRectMake(0, 0, b.size.width, b.size.height);
     _content.center = CGPointMake(CGRectGetMidX(b), CGRectGetMidY(b));
     CGFloat q = _q, p = MAX(0, MIN(1, _progress));
@@ -671,9 +692,6 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
     _notifs.alpha = ContentAlpha(p);
     _notifs.userInteractionEnabled = q < 0.05 || _listMode != 0;
     _notificationSurface.frame = _notificationArea.bounds;
-    // ScrimController's native-blur path uses linear shade progress, unlike
-    // notification content alpha. Do not multiply the two alpha hierarchies.
-    _notificationSurface.alpha = p;
 }
 
 - (void)layoutTilesOnly {
@@ -845,10 +863,7 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
     if (progress <= 0.001 && _progress > 0.001) { [self stopLiveUpdates]; [_dialog removeFromSuperview]; _dialog = nil; }
     _progress = progress;
     CGFloat p = MAX(0, MIN(1, progress));
-    if ([self.delegate respondsToSelector:@selector(panel:didChangePresentationProgress:)])
-        [self.delegate panel:self didChangePresentationProgress:p];
-    // Panel background follows the expansion linearly (ScrimController behindAlpha * panelFraction).
-    _backdrop.alpha = p;
+    // layoutAll commits material strength and both scrim alphas together.
     // The native presenter already reveals the shade. A second height mask
     // here cuts straight through quick tiles during opening and closing.
     // Keep the existing alpha/parallax and hide content at the closed endpoint.

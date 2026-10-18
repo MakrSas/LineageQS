@@ -239,6 +239,12 @@ static void ReloadPrefs(void) {
     }
 }
 
+- (void)viewDidLayoutSubviews {
+    %orig;
+    if (gPanel && gPanel.parentViewController == self)
+        [gPanel refreshPresentationBackdrop];
+}
+
 - (void)_updatePresentationForTransitionState:(id)state withCompletionHander:(id)handler {
     // Install lazily if viewDidLoad ran before this dylib was loaded. Before
     // %orig so the first transition frame already shows the panel.
@@ -249,6 +255,10 @@ static void ReloadPrefs(void) {
             SetNativeContentHidden(self, YES);
             double p = [[state valueForKey:@"presentationProgress"] doubleValue];
             [gPanel setPresentationProgress:p interactive:[[state valueForKey:@"interactive"] boolValue]];
+            // setPresentationProgress may keep an existing settle rather than
+            // consume this endpoint. Native updates above can still rewrite
+            // the material, so restore its current visual progress immediately.
+            [gPanel refreshPresentationBackdrop];
             // Log threshold crossings only (start, half, fully presented, fully dismissed).
             static int lastBucket = -1;
             int bucket = p <= 0.001 ? 0 : p < 0.5 ? 1 : p < 0.999 ? 2 : 3;

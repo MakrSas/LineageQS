@@ -32,6 +32,8 @@ typedef NS_ENUM(NSInteger, LQSPanelState) {
 // Native presentation progress (CCUIOverlayTransitionState.presentationProgress).
 - (void)setPresentationProgress:(CGFloat)progress;
 - (void)setPresentationProgress:(CGFloat)progress interactive:(BOOL)interactive;
+// Reapply current backdrop state after the native presenter lays out its material.
+- (void)refreshPresentationBackdrop;
 - (void)reloadFromPreferences;
 // Opens the Internet ("wifi"/"internet") or Bluetooth ("bt") dialog.
 - (void)showDetailsFor:(NSString *)identifier;
