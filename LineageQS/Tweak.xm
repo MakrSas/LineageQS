@@ -564,6 +564,7 @@ static LQSJailedController *gJailed;
         CGFloat t = [g translationInView:g.view].y, v = [g velocityInView:g.view].y;
         switch (g.state) {
             case UIGestureRecognizerStateBegan:
+                [self checkThemeChanged];
                 if (![self ensurePanelIn:g.view.window ?: (UIWindow *)g.view]) return;
                 self.panel.notificationsMode = NO;
                 @try { [self captureBlur]; } @catch (NSException *e) { NLog(@"jailed blur exception %@", e); }
@@ -611,6 +612,17 @@ static LQSJailedController *gJailed;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         if (!self.open) { self.panel.view.hidden = YES; self.blur.hidden = YES; self.blur.image = nil; }
     });
+}
+
+// Darwin notifications may not cross Nyxian process boundaries: compare the
+// stored theme on every pull and rebuild when it changed.
+- (void)checkThemeChanged {
+    static NSData *last;
+    CFPreferencesAppSynchronize(CFSTR("com.makr.materialyou"));
+    id d = CFBridgingRelease(CFPreferencesCopyAppValue(CFSTR("themeJSON"), CFSTR("com.makr.materialyou")));
+    if (![d isKindOfClass:NSData.class]) return;
+    if (last && ![last isEqualToData:d]) { last = d; [self rebuildForTheme]; return; }
+    if (!last) { last = d; [LQSTheme reloadTheme]; if (self.panel) [self rebuildForTheme]; }
 }
 
 - (void)rebuildForTheme {

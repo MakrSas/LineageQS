@@ -23,6 +23,15 @@ static NSString *MYJBThemePath(void) {
     return r ? @(r) : nil;
 }
 
+// Theme JSON is also kept in cfprefs (domain com.makr.materialyou, key themeJSON):
+// in sandboxed hosts (Nyxian jailed, TweakSettings) the theme file may not be
+// writable or shared, while preferences always are.
+static NSData *MYPrefsThemeData(void) {
+    CFPreferencesAppSynchronize(CFSTR("com.makr.materialyou"));
+    id v = CFBridgingRelease(CFPreferencesCopyAppValue(CFSTR("themeJSON"), CFSTR("com.makr.materialyou")));
+    return [v isKindOfClass:NSData.class] && [v length] ? v : nil;
+}
+
 static NSString *gThemePath = @"/var/mobile/Library/MaterialYou/theme.json"; // com.makr.materialyou
 
 static NSDictionary *Colors(void) {
@@ -32,7 +41,7 @@ static NSDictionary *Colors(void) {
         NSString *tp = gThemePath, *jb = MYJBThemePath();
         NSDate *(^mtime)(NSString *) = ^NSDate *(NSString *f) { return [[NSFileManager defaultManager] attributesOfItemAtPath:f error:nil].fileModificationDate; };
         if (jb && mtime(jb) && (!mtime(tp) || [mtime(jb) compare:mtime(tp)] == NSOrderedDescending)) tp = jb;
-        NSData *t = [NSData dataWithContentsOfFile:tp] ?: [NSData dataWithContentsOfFile:@"/var/mobile/Library/LineageQS/theme.json"]; // pre-1.0 location
+        NSData *t = MYPrefsThemeData() ?: [NSData dataWithContentsOfFile:tp] ?: [NSData dataWithContentsOfFile:@"/var/mobile/Library/LineageQS/theme.json"]; // pre-1.0 location
         NSDictionary *theme = t ? [NSJSONSerialization JSONObjectWithData:t options:0 error:nil] : nil;
         if ([theme[@"colors"] isKindOfClass:NSDictionary.class]) [m addEntriesFromDictionary:theme[@"colors"]];
         gColors = m;

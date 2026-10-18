@@ -41,6 +41,15 @@ typedef NS_ENUM(NSInteger, LQSColorsMode) { LQSColorsModeLanding, LQSColorsModeF
 #import <dlfcn.h>
 // roothide / Nyxian jailed: processes may not share /var/mobile, so the theme is
 // mirrored under the jailbreak root, which every process sees.
+// Theme JSON is also kept in cfprefs (domain com.makr.materialyou, key themeJSON):
+// in sandboxed hosts (Nyxian jailed, TweakSettings) the theme file may not be
+// writable or shared, while preferences always are.
+static NSData *MYPrefsThemeData(void) {
+    CFPreferencesAppSynchronize(CFSTR("com.makr.materialyou"));
+    id v = CFBridgingRelease(CFPreferencesCopyAppValue(CFSTR("themeJSON"), CFSTR("com.makr.materialyou")));
+    return [v isKindOfClass:NSData.class] && [v length] ? v : nil;
+}
+
 static NSString *MYJBThemePath(void) {
     const char *(*jbroot)(const char *) = (const char *(*)(const char *))dlsym(RTLD_DEFAULT, "jbroot");
     const char *r = jbroot ? jbroot("/var/mobile/Library/MaterialYou/theme.json") : NULL;
@@ -309,7 +318,7 @@ static UIBezierPath *Track(CGRect r, CGFloat outer, CGFloat inner, BOOL left) {
 - (UIColor *)c:(NSString *)k { return _scheme[k] ? ARGB(_scheme[k]) : UIColor.grayColor; }
 
 - (void)loadSaved {
-    NSData *d = [NSData dataWithContentsOfFile:self.themePath];
+    NSData *d = MYPrefsThemeData() ?: [NSData dataWithContentsOfFile:self.themePath] ?: (MYJBThemePath() ? [NSData dataWithContentsOfFile:MYJBThemePath()] : nil);
     NSDictionary *t = d ? [NSJSONSerialization JSONObjectWithData:d options:0 error:nil] : nil;
     _savedSeeds = [t[@"seeds"] isKindOfClass:NSArray.class] ? t[@"seeds"] : nil;
     _savedStyle = [t[@"style"] isKindOfClass:NSString.class] ? t[@"style"] : @"tonal_spot";
@@ -683,6 +692,10 @@ static UIBezierPath *Track(CGRect r, CGFloat outer, CGFloat inner, BOOL left) {
     NSData *d = [NSJSONSerialization dataWithJSONObject:t options:0 error:nil];
     [[NSFileManager defaultManager] createDirectoryAtPath:[self.themePath stringByDeletingLastPathComponent] withIntermediateDirectories:YES attributes:nil error:nil];
     [d writeToFile:self.themePath atomically:YES];
+    if (d) {
+        CFPreferencesSetAppValue(CFSTR("themeJSON"), (__bridge CFDataRef)d, CFSTR("com.makr.materialyou"));
+        CFPreferencesAppSynchronize(CFSTR("com.makr.materialyou"));
+    }
     NSString *jb = MYJBThemePath();
     if (jb && ![jb isEqualToString:self.themePath]) {
         [[NSFileManager defaultManager] createDirectoryAtPath:[jb stringByDeletingLastPathComponent] withIntermediateDirectories:YES attributes:nil error:nil];
