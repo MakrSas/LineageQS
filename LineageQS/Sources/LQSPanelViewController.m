@@ -105,6 +105,7 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
     CGFloat _progress;      // native presentation 0...1
     BOOL _brightnessMirroring;
     BOOL _closingPresentation;
+    BOOL _nativeCoasting;
     NSUInteger _presentationEpoch, _editorEpoch;
     CGFloat _q;             // QQS (0) -> QS (1)
     CGFloat _qStart;
@@ -112,6 +113,8 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
     CADisplayLink *_qLink, *_settleLink, *_pageLink;
     CGFloat _qFrom, _qTo, _settleFrom, _settleTo, _pageFrom, _pageTo;
     CFTimeInterval _qStartTime, _qDuration, _settleStart, _settleDuration, _pageStartTime;
+    CFTimeInterval _lastInteractiveTime;
+    CGFloat _lastInteractiveProgress, _interactiveVelocity, _settleVelocity, _qVelocity;
     NSTimer *_liveTimer;
     BOOL _liveRefreshPending;
     LQSDetailDialog *_dialog;
@@ -821,6 +824,7 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
     _qFrom = _q;
     _qTo = target;
     CGFloat dist = fabs(target - _q) * ([self qsBottom] - [self qqsBottom]);
+    _qVelocity = v / MAX(100, [self qsBottom] - [self qqsBottom]);
     _qDuration = v == 0 ? 0.368 : MAX(0.15, MIN(0.4, dist / MAX(1, fabs(v)) * 2.0));
     _qStartTime = CACurrentMediaTime();
     _qLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(qTick:)];
@@ -831,6 +835,8 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
     if (l != _qLink) return;
     CGFloat f = MIN(1, (CACurrentMediaTime() - _qStartTime) / _qDuration);
     CGFloat e = LQSCubic(0.3, 0, 0.1, 1, f);
+    if (_qVelocity * (_qTo - _qFrom) > 0)
+        e = LQSReleaseFraction(f, _qVelocity, _qTo - _qFrom, _qDuration);
     [self setQ:Lerp(_qFrom, _qTo, e)];
     if (f >= 1 && l == _qLink) { [_qLink invalidate]; _qLink = nil; _state = _qTo > 0.5 ? LQSPanelStateExpanded : LQSPanelStateCompact; }
 }
@@ -857,18 +863,36 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
 
 - (void)setPresentationProgress:(CGFloat)progress interactive:(BOOL)interactive {
     progress = MAX(0, MIN(1, progress));
+    CFTimeInterval now = CACurrentMediaTime();
+    if (interactive) {
+        CFTimeInterval dt = now - _lastInteractiveTime;
+        _interactiveVelocity = dt >= 1.0 / 240 && dt <= 0.12 ? (progress - _lastInteractiveProgress) / dt : 0;
+        _lastInteractiveTime = now;
+        _lastInteractiveProgress = progress;
+    }
     [self preparePresentationDirection:progress];
     if (!interactive && _settleLink && fabs(progress - _settleTo) < 0.001) return;
-    if (interactive || fabs(progress - _progress) < 0.001) {
+    // Native in-between samples already contain the presenter's easing. A
+    // fresh tween for each sample adds lag and restarts from rest on release.
+    BOOL nativeSample = !interactive && progress > 0.001 && progress < 0.999;
+    BOOL finishesNativeMotion = !interactive && _nativeCoasting && !nativeSample;
+    if (interactive || finishesNativeMotion) _nativeCoasting = NO;
+    if (nativeSample) _nativeCoasting = YES;
+    if (interactive || nativeSample || finishesNativeMotion || fabs(progress - _progress) < 0.001) {
         [_settleLink invalidate]; _settleLink = nil;
         [_content.layer removeAnimationForKey:@"overshoot"];
+        if (nativeSample) { _lastInteractiveTime = 0; _interactiveVelocity = 0; }
         [UIView performWithoutAnimation:^{ [self applyPresentationProgress:progress]; }];
         return;
     }
     _settleFrom = _progress;
     _settleTo = progress;
-    _settleStart = CACurrentMediaTime();
-    _settleDuration = UIAccessibilityIsReduceMotionEnabled() ? 0.12 : (progress > _progress ? 0.35 : 0.2 + 0.1 * _progress);
+    _settleStart = now;
+    _settleVelocity = now - _lastInteractiveTime <= 0.12 ? _interactiveVelocity : 0;
+    _lastInteractiveTime = 0;
+    _interactiveVelocity = 0;
+    _settleDuration = UIAccessibilityIsReduceMotionEnabled() ? 0.12 : LQSShadeSettleDuration(_progress, progress);
+    if (UIAccessibilityIsReduceMotionEnabled()) _settleVelocity = 0;
     [_content.layer removeAnimationForKey:@"overshoot"];
     if (progress > _progress && !UIAccessibilityIsReduceMotionEnabled()) {
         CAKeyframeAnimation *o = [CAKeyframeAnimation animationWithKeyPath:@"transform.translation.y"];
@@ -889,6 +913,8 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
     CGFloat f = MIN(1, (CACurrentMediaTime() - _settleStart) / _settleDuration);
     BOOL opening = _settleTo > _settleFrom;
     CGFloat e = opening ? LQSCubic(0.4, 0, 0.2, 1, f) : LQSCubic(0.3, 0, 0.5, 1, f);
+    if (_settleVelocity * (_settleTo - _settleFrom) > 0)
+        e = LQSReleaseFraction(f, _settleVelocity, _settleTo - _settleFrom, _settleDuration);
     [UIView performWithoutAnimation:^{
         [self applyPresentationProgress:self->_settleFrom + (self->_settleTo - self->_settleFrom) * e];
     }];
