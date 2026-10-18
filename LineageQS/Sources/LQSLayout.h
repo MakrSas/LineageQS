@@ -1,6 +1,17 @@
 #pragma once
 #include <math.h>
 
+// FromQuickQuickSettingsToQuickSettings: QS-only content enters over [0.43,1].
+static inline double LQSExpansionContentAlpha(double expansion) {
+    return fmax(0, fmin(1, (expansion - 0.43) / 0.57));
+}
+
+// AnchoredTranslate: entering QS content moves by the GridAnchor delta,
+// rather than an arbitrary slide. Shared tiles use the same interpolated anchor.
+static inline double LQSAnchoredQSOffset(double expansion, double compactTop, double expandedTop) {
+    return (1 - fmax(0, fmin(1, expansion))) * (compactTop - expandedTop);
+}
+
 // NSSL.calculateInterpolatedStackHeight: the no-shelf stack starts at 50%
 // height. QSC passes that stack fraction, not raw shade progress, to QQS.
 static inline double LQSNotificationStackFraction(double progress) {

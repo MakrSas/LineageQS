@@ -391,6 +391,36 @@ Sources (LineageOS 24):
 - [QuickSettingsControllerImpl](https://github.com/LineageOS/android_frameworks_base/blob/lineage-24.0/packages/SystemUI/src/com/android/systemui/shade/QuickSettingsControllerImpl.java)
 - [ScrimController](https://github.com/LineageOS/android_frameworks_base/blob/lineage-24.0/packages/SystemUI/src/com/android/systemui/statusbar/phone/ScrimController.java)
 
+## QQS-to-QS visual transition update
+
+The port now uses `FromQuickQuickSettingsToQuickSettings`, not the separate
+shade-to-QS transition's 0.95 fade endpoint. QS-only tiles and brightness fade
+over 0.43–1; shared first-page tiles remain opaque and interpolate their layout
+bounds without scaling glyphs. For this fixed-column layout, the shared tile
+positions are equivalent to the interpolated `GridAnchor` position.
+
+Entering QS content uses `(1-q) * (qqsGridTop-qsGridTop)` as its translation,
+following `AnchoredTranslate`. Brightness and the pager/Edit row use that same
+anchor delta instead of independent 40pt slides. The pager/Edit row belongs to
+`QuickSettingsContent`, so it shares the 0.43–1 fade. Settings/Power belong to
+`FooterActions`: they remain bottom-anchored and fade over 0.9–1. Final safe-area
+spacing, tile sizes and activated radii are unchanged.
+
+When collapsing a non-first page, keep the outgoing page in place horizontally
+and fade its QS content while separate, noninteractive QQS counterparts fade
+out over 0–0.5 in the opening direction (in over 0.5–0 on collapse). They follow
+the same grid anchor and reflect live tile state. The outgoing page is reset
+only once QQS is reached, when QS content is already transparent. Reversing
+before that endpoint retains the outgoing page. This maps Android's disabled
+shared-tile transition off the first page without a page-one snap.
+
+Sources:
+
+- [QQS-to-QS transition](https://github.com/LineageOS/android_frameworks_base/blob/lineage-24.0/packages/SystemUI/src/com/android/systemui/qs/composefragment/ui/FromQuickQuickSettingsToQuickSettings.kt)
+- [AnchoredTranslate](https://github.com/LineageOS/android_frameworks_base/blob/lineage-24.0/packages/SystemUI/compose/scene/src/com/android/compose/animation/scene/transformation/AnchoredTranslate.kt)
+- [GridAnchor](https://github.com/LineageOS/android_frameworks_base/blob/lineage-24.0/packages/SystemUI/src/com/android/systemui/qs/composefragment/ui/GridAnchor.kt)
+- [QS content hierarchy](https://github.com/LineageOS/android_frameworks_base/blob/lineage-24.0/packages/SystemUI/src/com/android/systemui/qs/composefragment/QSFragmentCompose.kt), [shared-tile eligibility](https://github.com/LineageOS/android_frameworks_base/blob/lineage-24.0/packages/SystemUI/src/com/android/systemui/qs/composefragment/QSFragmentComposeViewModel.kt)
+
 ## 13. Classic-shade footer spacing
 
 LineageOS 24 separates the system bottom inset from footer content padding.

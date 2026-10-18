@@ -98,6 +98,8 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
     UILabel *_feedback;
     LQSIconButton *_editButton, *_settingsButton, *_powerButton;
     NSMutableArray<LQSTileView *> *_tiles;
+    NSMutableDictionary<NSNumber *, LQSTileView *> *_qqsTransitionTiles;
+    BOOL _qsPageCrossfade;
     NSArray<NSValue *> *_cells;
     NSInteger _pageCount;
     CGFloat _page;          // fractional page while paging
@@ -342,6 +344,9 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
 
 - (void)rebuildTiles {
     for (UIView *v in _tiles) [v removeFromSuperview];
+    for (UIView *v in _qqsTransitionTiles.allValues) [v removeFromSuperview];
+    _qqsTransitionTiles = [NSMutableDictionary dictionary];
+    _qsPageCrossfade = NO;
     _tiles = [NSMutableArray array];
     LQSModel *m = [LQSModel shared];
     __weak typeof(self) weakSelf = self;
@@ -363,8 +368,23 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
     NSInteger pages = 1;
     [self updateGridForBounds];
     _cells = PlaceEntries(entries, &pages);
+    // A non-first QS page has no shared tiles with QQS. Keep live, noninteractive
+    // QQS counterparts for Android's overlapping fades instead of snapping pages.
+    for (NSUInteger i = 0; i < _cells.count; i++) {
+        LQSCell c; [_cells[i] getValue:&c];
+        if (c.page != 0 || c.row >= kQQSRows) continue;
+        LQSTileView *source = _tiles[i];
+        LQSTileView *copy = [[LQSTileView alloc] initWithSpec:source.spec size:source.size];
+        copy.hidden = YES;
+        copy.userInteractionEnabled = NO;
+        copy.isAccessibilityElement = NO;
+        copy.accessibilityElementsHidden = YES;
+        _qqsTransitionTiles[@(i)] = copy;
+        [_gridClip addSubview:copy];
+    }
     _pageCount = pages;
-    _page = MIN(_page, pages - 1);
+    _page = _q <= 0 ? 0 : MIN(_page, pages - 1);
+    _qsPageCrossfade = _q > 0 && _q < 1 && _page >= 0.5;
     _brightness.showAuto = _settings.showAutoBrightness;
     _notifs.hidden = !_settings.showNotifications;
     [self.view setNeedsLayout];
@@ -423,6 +443,10 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
         [self applyStateToTile:t animated:(_progress > 0.5)];
         t.stateText = [self secondaryFor:t info:info];
     }
+    if (_qsPageCrossfade) [UIView performWithoutAnimation:^{
+        [self layoutTilesOnly];
+        [self->_gridClip layoutIfNeeded];
+    }];
     if (!withBrightness || _brightness.dragging) return;
     CGFloat b = [LQSBackends brightnessControlSupported] ? [LQSBackends brightness] : -1;
     if (b >= 0) _brightness.value = b;
@@ -650,9 +674,12 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
     _header.frame = CGRectMake(0, 0, w, [_header expandedHeight]);
     _header.expansion = gLandscape ? 0 : q; // landscape keeps the one-row header
 
-    // Brightness: only in QS (showSlider 1 = panel, not QQS); fades in with the QS content.
-    _brightness.frame = CGRectMake(inset, [self qsBrightnessTop] - (1 - q) * 40, w - 2 * inset, [self brightnessHeight]);
-    _brightness.alpha = Range(q, 0.43, 0.95);
+    CGFloat qsOffset = LQSAnchoredQSOffset(q, [self qqsTop], [self qsGridTop]);
+    CGFloat qsAlpha = LQSExpansionContentAlpha(q);
+    // No QQS slider in this layout: brightness inherits entering QSContent's
+    // GridAnchor translation and fade, not a separate 40pt animation.
+    _brightness.frame = CGRectMake(inset, [self qsBrightnessTop] + qsOffset, w - 2 * inset, [self brightnessHeight]);
+    _brightness.alpha = qsAlpha;
     _brightness.userInteractionEnabled = q > 0.95;
 
     // Keep the drawing viewport full-height. Interpolating its clipping edge
@@ -667,8 +694,9 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
 
     CGFloat qsGridBottom = [self qsGridTop] + qsH;
     UIEdgeInsets safe = self.view.safeAreaInsets;
-    _footer.frame = CGRectMake(inset, LQSFooterTop(b.size.height, safe.bottom) + (1 - q) * 40, w - 2 * inset, 48);
-    _footer.alpha = Range(q, 0.9, 1);
+    // Pager/Edit belongs to QuickSettingsContent, not FooterActions.
+    _footer.frame = CGRectMake(inset, LQSFooterTop(b.size.height, safe.bottom) + qsOffset, w - 2 * inset, 48);
+    _footer.alpha = qsAlpha;
     _footer.userInteractionEnabled = q > 0.95;
     _dots.frame = _footer.bounds;
     _dots.pages = _pageCount;
@@ -682,7 +710,7 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
     // FooterActions expands its touch layout by 4dp on each side so the
     // 40dp visuals remain aligned with the content edges inside 48dp targets.
     _actions.frame = CGRectMake(actionsLeft - 4, actionsTop, MAX(0, w - actionsLeft - actionsRight + 8), 48);
-    _actions.alpha = _footer.alpha;
+    _actions.alpha = Range(q, 0.9, 1); // FooterActions fades in place.
     _actions.userInteractionEnabled = q > 0.95;
     _powerButton.frame = CGRectMake(_actions.bounds.size.width - 4 - 40, 4, 40, 40);
     _settingsButton.frame = CGRectMake(_actions.bounds.size.width - 4 - 40 - 8 - 40, 4, 40, 40);
@@ -712,7 +740,7 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
     CGFloat q = _q, p = MAX(0, MIN(1, _progress)), w = self.view.bounds.size.width, inset = [LQSTheme sideInset];
     CGFloat cw = [self cellWidth], gap = [LQSTheme tileGap];
     CGFloat squish = LQSQuickTileSquish(p, q);
-    CGFloat pageOffset = _page * w * q; // pages slide horizontally (InterPageSpacing: page = full width incl. 16dp margins)
+    CGFloat pageOffset = _page * w; // no horizontal page reset during vertical collapse
     CGFloat qsTop = [self qsGridTop], qqsTop = [self qqsTop], clipTop = _gridClip.frame.origin.y;
     for (NSUInteger i = 0; i < _tiles.count && i < _cells.count; i++) {
         LQSTileView *t = _tiles[i];
@@ -726,19 +754,34 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
         CGFloat yQS = qsTop + c.row * ([self tileHeight] + gap);
         CGFloat yQQS = qqsTop + c.row * (rowH + gap);
         // QS-only tiles ride with the grid (they belong to the same expanding QS panel).
-        CGFloat y = inQQS ? Lerp(yQQS, yQS, q) : Lerp(qqsTop, qsTop, q) + c.row * ([self tileHeight] + gap);
-        CGFloat height = inQQS ? Lerp(rowH, [self tileHeight], q) : [self tileHeight];
+        BOOL shared = inQQS && !_qsPageCrossfade;
+        CGFloat y = shared ? Lerp(yQQS, yQS, q) : yQS + LQSAnchoredQSOffset(q, qqsTop, qsTop);
+        CGFloat height = shared ? Lerp(rowH, [self tileHeight], q) : [self tileHeight];
         // Small tiles stay square at rest on both narrow and wide displays.
         CGFloat tileWidth = c.span == 1 ? MIN(width, [self tileHeight]) : width;
         // verticalSquish changes layout height and centers normal-size content;
         // it does not scale glyphs or give them a separate height-based fade.
-        t.squish = inQQS ? squish : 1;
+        t.squish = shared ? squish : 1;
         t.transform = CGAffineTransformIdentity;
         t.bounds = CGRectMake(0, 0, tileWidth, height);
         t.center = CGPointMake(x + width / 2, y - clipTop + height / 2);
-        // QS-only tiles fade in over [0.43, 0.95] (FromShadeToQuickSettingsTransition).
-        t.alpha = inQQS ? 1 : Range(q, 0.43, 0.95);
+        // Shared tiles stay opaque; QS-only content fades over [0.43, 1].
+        t.alpha = shared ? 1 : LQSExpansionContentAlpha(q);
         t.userInteractionEnabled = inQQS ? (q < 0.05 || q > 0.95) : q > 0.95;
+        LQSTileView *copy = _qqsTransitionTiles[@(i)];
+        copy.hidden = !_qsPageCrossfade;
+        if (copy && _qsPageCrossfade) {
+            copy.on = t.on;
+            copy.unavailable = t.unavailable;
+            copy.stateText = t.stateText;
+            copy.iconOverride = t.iconOverride;
+            copy.iconText = t.iconText;
+            copy.squish = squish;
+            copy.bounds = CGRectMake(0, 0, tileWidth, rowH);
+            copy.center = CGPointMake(inset + c.col * (cw + gap) + width / 2,
+                                      yQQS + q * (qsTop - qqsTop) - clipTop + rowH / 2);
+            copy.alpha = 1 - Range(q, 0, 0.5);
+        }
     }
 }
 
@@ -802,6 +845,13 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
 - (void)setQ:(CGFloat)q {
     CGFloat previous = _q;
     _q = MAX(0, MIN(1, q));
+    if (previous >= 0.999 && _q < 0.999) {
+        [_pageLink invalidate]; _pageLink = nil;
+        _qsPageCrossfade = _page >= 0.5;
+        if (!_qsPageCrossfade) _page = 0;
+    }
+    if (_q <= 0) { _page = 0; _qsPageCrossfade = NO; }
+    else if (_q >= 1) _qsPageCrossfade = NO;
     // NSSL.setQsExpansionFraction resets the notification scroll as QS pushes
     // it out. Use a ratio so this is independent of the number of animation ticks.
     UIScrollView *scroll = _notifs.scrollView;
@@ -809,7 +859,6 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
         CGFloat remaining = (1 - _q) / MAX(0.001, 1 - previous);
         scroll.contentOffset = CGPointMake(0, scroll.contentOffset.y * remaining);
     }
-    if (_q < 0.999 && _page != 0 && !_pageLink) _page = 0; // QQS always shows page 0
     [UIView performWithoutAnimation:^{
         [self layoutAll];
         [self->_content layoutIfNeeded];
