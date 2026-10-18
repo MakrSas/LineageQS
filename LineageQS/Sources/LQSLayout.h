@@ -31,16 +31,20 @@ static inline double LQSShadeDragProgress(double start, double delta, double hei
     return fmax(0, fmin(1, start + delta / fmax(1, height)));
 }
 
+// LineageOS 24 classic shade: system bottom inset, then FooterActions with
+// 8dp top / 4dp bottom padding and 48dp interactive targets (40dp visuals).
+// UIKit safeBottom substitutes for Android's bottomStableInsets; do not invent
+// a navigation-bar height for devices with a physical Home button.
 static inline double LQSActionRowTop(double height, double safeBottom) {
-    return fmax(0, height - safeBottom - 40);
+    return fmax(0, height - fmax(0, safeBottom) - 4 - 48);
 }
 
-// Pager/Edit sit immediately above the bottom action row, not below the grid.
+// PaginatedGridLayout's 48dp Pager/Edit row precedes FooterActions' top padding.
 static inline double LQSFooterTop(double height, double safeBottom) {
-    return fmax(0, LQSActionRowTop(height, safeBottom) - 4 - 48);
+    return fmax(0, LQSActionRowTop(height, safeBottom) - 8 - 48);
 }
 
-// Keep the pager and 40pt action buttons below the grid, inside the safe area.
+// Keep the complete footer stack below the grid, inside the safe area.
 static inline int LQSRowsFitting(int preferred, double available, double rowHeight, double gap) {
     int rows = (int)floor((fmax(0, available) + gap) / fmax(1, rowHeight + gap));
     return rows < 1 ? 1 : (rows > preferred ? preferred : rows);

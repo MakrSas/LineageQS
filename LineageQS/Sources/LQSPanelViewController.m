@@ -661,16 +661,18 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
     _dots.pages = _pageCount;
     _dots.position = _page;
     _feedback.frame = _footer.bounds;
-    _editButton.frame = CGRectMake(_footer.bounds.size.width - 40, 4, 40, 40);
+    _editButton.frame = CGRectMake(_footer.bounds.size.width - 48, 0, 48, 48);
     _editButton.hidden = !_settings.editorEnabled;
     _editor.frame = b;
     CGFloat actionsLeft = MAX(inset, safe.left + 8), actionsRight = MAX(inset, safe.right + 8);
     CGFloat actionsTop = LQSActionRowTop(b.size.height, safe.bottom);
-    _actions.frame = CGRectMake(actionsLeft, actionsTop, MAX(0, w - actionsLeft - actionsRight), 40);
+    // FooterActions expands its touch layout by 4dp on each side so the
+    // 40dp visuals remain aligned with the content edges inside 48dp targets.
+    _actions.frame = CGRectMake(actionsLeft - 4, actionsTop, MAX(0, w - actionsLeft - actionsRight + 8), 48);
     _actions.alpha = _footer.alpha;
     _actions.userInteractionEnabled = q > 0.95;
-    _powerButton.frame = CGRectMake(_actions.bounds.size.width - 40, 0, 40, 40);
-    _settingsButton.frame = CGRectMake(_actions.bounds.size.width - 40 - 8 - 40, 0, 40, 40);
+    _powerButton.frame = CGRectMake(_actions.bounds.size.width - 4 - 40, 4, 40, 40);
+    _settingsButton.frame = CGRectMake(_actions.bounds.size.width - 4 - 40 - 8 - 40, 4, 40, 40);
 
     CGFloat qqsGridBottom = [self qqsTop] + qqsH;
     _media.hidden = !_media.hasMedia;

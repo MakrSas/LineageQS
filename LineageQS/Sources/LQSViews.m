@@ -862,6 +862,13 @@ static CGFloat LayoutChip(UIView *chip, NSArray<UIImageView *> *icons, LQSBatter
 }
 - (void)setFill:(UIColor *)fill { _fill = fill; self.backgroundColor = fill; }
 - (void)setGlyph:(UIColor *)glyph { _glyph = glyph; _iv.tintColor = glyph; }
+- (BOOL)pointInside:(CGPoint)point withEvent:(UIEvent *)event {
+    // Expandable.minimumInteractiveComponentSize: a 40dp visual gets a 48dp
+    // touch target. The action-row parent reserves this surrounding space.
+    CGRect target = CGRectInset(self.bounds, -MAX(0, (48 - self.bounds.size.width) / 2),
+                                -MAX(0, (48 - self.bounds.size.height) / 2));
+    return CGRectContainsPoint(target, point);
+}
 - (void)layoutSubviews { [super layoutSubviews]; _iv.frame = self.bounds; self.layer.cornerRadius = MIN(self.bounds.size.width, self.bounds.size.height) / 2; }
 - (void)down { [UIView animateWithDuration:0.1 animations:^{ self.alpha = 0.7; }]; }
 - (void)up { [UIView animateWithDuration:0.15 animations:^{ self.alpha = 1; }]; }

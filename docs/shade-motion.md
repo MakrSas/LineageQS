@@ -390,3 +390,25 @@ Sources (LineageOS 24):
 - [StackScrollAlgorithm](https://github.com/LineageOS/android_frameworks_base/blob/lineage-24.0/packages/SystemUI/src/com/android/systemui/statusbar/notification/stack/StackScrollAlgorithm.java)
 - [QuickSettingsControllerImpl](https://github.com/LineageOS/android_frameworks_base/blob/lineage-24.0/packages/SystemUI/src/com/android/systemui/shade/QuickSettingsControllerImpl.java)
 - [ScrimController](https://github.com/LineageOS/android_frameworks_base/blob/lineage-24.0/packages/SystemUI/src/com/android/systemui/statusbar/phone/ScrimController.java)
+
+## 13. Classic-shade footer spacing
+
+LineageOS 24 separates the system bottom inset from footer content padding.
+`NotificationsQSContainerController.calculateBottomSpacing` passes
+`bottomStableInsets` into classic, non-detail QS; `QSFragmentCompose` places
+that spacer below the footer. The iOS equivalent uses the current bottom safe
+area, without synthesizing an Android navigation bar on Home-button devices.
+
+`FooterActions` adds 8dp top and 4dp bottom padding. `Expandable` reserves a 48dp
+interactive target around the 40dp circle, so the visible circle ends 8dp above
+the system inset (4dp row padding + 4dp touch padding). `PaginatedGridLayout`
+uses a separate 48dp Edit/pager row. The port reserves that complete stack for
+grid fitting, expands action touch targets to 48pt, and retains 40pt visuals.
+This is the classic single-shade mapping, not Android taskbar/split-shade logic.
+
+Sources:
+
+- [Bottom-spacing calculation](https://github.com/LineageOS/android_frameworks_base/blob/lineage-24.0/packages/SystemUI/src/com/android/systemui/shade/NotificationsQSContainerController.kt)
+- [FooterActions](https://github.com/LineageOS/android_frameworks_base/blob/lineage-24.0/packages/SystemUI/compose/features/src/com/android/systemui/qs/footer/ui/compose/FooterActions.kt), [resource dimensions](https://github.com/LineageOS/android_frameworks_base/blob/lineage-24.0/packages/SystemUI/res/values/dimens.xml)
+- [Expandable touch/visual sizing](https://github.com/LineageOS/android_frameworks_base/blob/lineage-24.0/packages/SystemUI/compose/core/src/com/android/compose/animation/Expandable.kt)
+- [PaginatedGridLayout footer](https://github.com/LineageOS/android_frameworks_base/blob/lineage-24.0/packages/SystemUI/src/com/android/systemui/qs/panels/ui/compose/PaginatedGridLayout.kt)
