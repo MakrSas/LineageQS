@@ -33,6 +33,10 @@
 - (void)cancelPresentationWithLocation:(CGPoint)l translation:(CGPoint)t velocity:(CGPoint)v;
 @end
 @interface SBGrabberTongue : NSObject
+- (BOOL)isVisible;
+- (CGRect)_frameForTongueWhenVisible:(BOOL)visible;
+- (CGAffineTransform)_transformForTongueContainer;
+- (CGRect)_chevronFrameForTongueBounds:(CGRect)bounds;
 @end
 @interface SBCoverSheetPrimarySlidingViewController : UIViewController
 @end
@@ -577,12 +581,20 @@ static BOOL RouteTopGesture(UIPanGestureRecognizer *g, UIGestureRecognizerState 
 static char kTopGrabberVisualEdge;
 
 static void CaptureTopGrabberVisualEdge(SBGrabberTongue *tongue, UIPanGestureRecognizer *g) {
-    if (!gTopSwipe || g.state != UIGestureRecognizerStateBegan) return;
+    if (!gTopSwipe || (g.state != UIGestureRecognizerStatePossible && g.state != UIGestureRecognizerStateBegan)) return;
     Class primary = objc_getClass("SBCoverSheetPrimarySlidingViewController");
     if (!primary || ![IvarValue(tongue, "_delegate") isKindOfClass:primary]) return;
     UIView *host = IvarValue(tongue, "_containingView");
     if (![host isKindOfClass:UIView.class]) return;
     UIInterfaceOrientation orientation = host.window.windowScene.interfaceOrientation;
+    // Before the first recognition the CoverSheet scene can still report its
+    // old orientation. Prefer the active interface until touch orientation is set.
+    UIApplication *app = UIApplication.sharedApplication;
+    SEL activeOrientation = NSSelectorFromString(@"activeInterfaceOrientation");
+    if ([app respondsToSelector:activeOrientation]) {
+        UIInterfaceOrientation active = ((UIInterfaceOrientation (*)(id, SEL))objc_msgSend)(app, activeOrientation);
+        if (active != UIInterfaceOrientationUnknown) orientation = active;
+    }
     SEL touchOrientation = NSSelectorFromString(@"_touchInterfaceOrientation");
     if ([g respondsToSelector:touchOrientation]) {
         UIInterfaceOrientation touch = ((UIInterfaceOrientation (*)(id, SEL))objc_msgSend)(g, touchOrientation);
@@ -623,6 +635,27 @@ static void WithTopGrabberVisualEdge(SBGrabberTongue *tongue, void (^calculate)(
 }
 
 %hook SBGrabberTongue
+- (void)_presentTongueAnimated:(BOOL)animated autoDismiss:(BOOL)autoDismiss {
+    // The container may have been created before the first landscape gesture.
+    // Correct its hidden start geometry before iOS captures the show animation;
+    // correcting only the target frame leaves that first arrow on the old edge.
+    NSNumber *edge = gTopSwipe ? objc_getAssociatedObject(self, &kTopGrabberVisualEdge) : nil;
+    UIView *container = IvarValue(self, "_tongueContainer");
+    if (edge && ![self isVisible] && [container isKindOfClass:UIView.class]) {
+        [UIView performWithoutAnimation:^{
+            [CATransaction begin];
+            [CATransaction setDisableActions:YES];
+            container.transform = [self _transformForTongueContainer];
+            container.frame = [self _frameForTongueWhenVisible:NO];
+            UIView *chevron = IvarValue(self, "_tongueChevron");
+            if ([chevron isKindOfClass:UIView.class])
+                chevron.frame = [self _chevronFrameForTongueBounds:container.bounds];
+            [CATransaction commit];
+        }];
+    }
+    %orig;
+}
+
 - (void)_handlePullGesture:(UIPanGestureRecognizer *)g {
     if ([g isKindOfClass:UIPanGestureRecognizer.class]) CaptureTopGrabberVisualEdge(self, g);
     %orig;
@@ -647,6 +680,8 @@ static void WithTopGrabberVisualEdge(SBGrabberTongue *tongue, void (^calculate)(
 }
 
 - (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)g {
+    // Native shouldBegin can prepare/show the arrow, before _handlePullGesture:.
+    if ([g isKindOfClass:UIPanGestureRecognizer.class]) CaptureTopGrabberVisualEdge(self, (UIPanGestureRecognizer *)g);
     BOOL r = %orig;
     if (r && !gBottomSwipe) {
         SBControlCenterController *cc = [objc_getClass("SBControlCenterController") sharedInstanceIfExists];
