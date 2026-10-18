@@ -75,8 +75,19 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
 }
 @end
 
+// QS and notifications are sibling animation groups. Empty space in the QS
+// drawing canvas must not swallow touches intended for the notification list.
+@interface LQSContentCanvas : UIView
+@end
+@implementation LQSContentCanvas
+- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
+    UIView *hit = [super hitTest:point withEvent:event];
+    return hit == self ? nil : hit;
+}
+@end
+
 @implementation LQSPanelViewController {
-    UIView *_backdrop, *_panelColor, *_notificationSurface, *_content, *_footer, *_actions;
+    UIView *_backdrop, *_panelColor, *_notificationArea, *_notificationSurface, *_content, *_footer, *_actions;
     LQSGridViewport *_gridClip;
     UIVisualEffectView *_blur;
     LQSHeaderView *_header;
@@ -94,6 +105,7 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
     CGFloat _progress;      // native presentation 0...1
     CGFloat _q;             // QQS (0) -> QS (1)
     CGFloat _qStart;
+    CGFloat _pStart;
     CADisplayLink *_qLink, *_settleLink, *_pageLink;
     CGFloat _qFrom, _qTo, _settleFrom, _settleTo, _pageFrom, _pageTo;
     CFTimeInterval _qStartTime, _qDuration, _settleStart, _settleDuration, _pageStartTime;
@@ -106,6 +118,7 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
     NSInteger _listMode;    // drag in the notification list: 0 scroll, 1 expands QS, 2 closes the shade
     BOOL _listDecided;      // the mode is chosen once, on the first movement of the drag
     CGFloat _listModeY;
+    CGFloat _listScrollStart;
     LQSEditor *_editor;
     LQSMediaCard *_media;
 }
@@ -121,7 +134,7 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
 - (CGFloat)gridHeightRows:(NSInteger)rows squish:(CGFloat)s { return rows * [self rowHeight:s] + (rows - 1) * [LQSTheme tileGap]; }
 - (CGFloat)mediaExtra { return _media.hasMedia ? 16 + [LQSMediaCard height] : 0; } // QQS: tiles, then media (16dp)
 - (CGFloat)qqsBottom { return [self qqsTop] + [self gridHeightRows:MIN(kQQSRows, [self usedRowsOnFirstPage]) squish:1] + [self mediaExtra] + 24; } // qqs_layout_padding_bottom
-- (CGFloat)qsBottom { return [self qsGridTop] + [self gridHeightRows:kRowsPerPage squish:1] + 48 + 8 + 40 + 4; } // pager footer 48, actions
+- (CGFloat)qsBottom { return self.view.bounds.size.height; } // actions/footer are bottom-anchored
 - (CGFloat)cellWidth { return (self.view.bounds.size.width - 2 * [LQSTheme sideInset] - (kColumns - 1) * [LQSTheme tileGap]) / kColumns; }
 - (BOOL)updateGridForBounds {
     NSInteger oldColumns = kColumns, oldRows = kRowsPerPage;
@@ -158,19 +171,22 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
     _panelColor.userInteractionEnabled = NO;
     [_backdrop addSubview:_panelColor];
 
-    // This surface reaches the bottom even while the content reveal is partial.
+    // The stack/scrim share one coordinate system, separate from QS parallax
+    // and overshoot. Keep the dark surface full-height below the moving edge.
+    _notificationArea = [UIView new];
+    [root addSubview:_notificationArea];
     _notificationSurface = [UIView new];
     _notificationSurface.userInteractionEnabled = NO;
     _notificationSurface.backgroundColor = [LQSColor(@"surface_effect_0") colorWithAlphaComponent:0.5];
     _notificationSurface.layer.cornerRadius = 28;
     _notificationSurface.layer.maskedCorners = kCALayerMinXMinYCorner | kCALayerMaxXMinYCorner;
-    [_backdrop addSubview:_notificationSurface];
+    [_notificationArea addSubview:_notificationSurface];
 
-    _content = [UIView new];
+    _content = [LQSContentCanvas new];
     [root addSubview:_content];
 
     _notifs = [LQSNotificationStack new];
-    _notifs.showsBackground = NO; // drawn outside the content's reveal mask
+    _notifs.showsBackground = NO; // the sibling scrim has independent opacity
     __weak typeof(self) weakSelf = self;
     _notifs.requestDismiss = ^{ [weakSelf.delegate panelRequestsDismiss:weakSelf]; };
     _notifs.openSettingsURL = ^(NSString *url) {
@@ -179,7 +195,7 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
         if ([app respondsToSelector:sbOpen]) ((void (*)(id, SEL, id))objc_msgSend)(app, sbOpen, [NSURL URLWithString:url]);
         [weakSelf.delegate panelRequestsDismiss:weakSelf];
     };
-    [_content addSubview:_notifs];
+    [_notificationArea addSubview:_notifs];
     _media = [LQSMediaCard new];
     _media.onChange = ^{ [UIView animateWithDuration:0.35 delay:0 usingSpringWithDamping:1 initialSpringVelocity:0 options:UIViewAnimationOptionAllowUserInteraction animations:^{ [weakSelf.view setNeedsLayout]; [weakSelf.view layoutIfNeeded]; } completion:nil]; };
     [_content addSubview:_media];
@@ -562,6 +578,7 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
 - (void)mirror:(BOOL)on {
     [UIView animateWithDuration:on ? 0.15 : 0.25 delay:0 options:UIViewAnimationOptionBeginFromCurrentState animations:^{
         for (UIView *v in self->_content.subviews) if (v != self->_brightness) v.alpha = on ? 0 : 1;
+        self->_notificationArea.alpha = on ? 0 : 1;
         self->_backdrop.alpha = on ? 0.15 : MAX(0, MIN(1, self->_progress));
     } completion:^(BOOL f) { if (!on) [self layoutAll]; }];
 }
@@ -586,6 +603,7 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
 
 - (void)layoutAll {
     CGRect b = self.view.bounds;
+    if (CGRectIsEmpty(b)) return;
     BOOL gridChanged = [self updateGridForBounds];
     if (gridChanged && _tiles.count) { [self rebuildTiles]; return; }
     CGFloat w = b.size.width, inset = [LQSTheme sideInset];
@@ -606,7 +624,7 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
 
     // Keep the drawing viewport full-height. Interpolating its clipping edge
     // between row counts slices through QS-only tiles as they fade in.
-    CGFloat squish = (q > 0) ? 1 : 0.1 + 0.9 * p; // constrainSquishiness(0.1 + 0.9x)
+    CGFloat squish = LQSQuickTileSquish(p, q);
     NSInteger qqsRows = MIN(kQQSRows, [self usedRowsOnFirstPage]);
     CGFloat qqsH = [self gridHeightRows:qqsRows squish:squish], qsH = [self gridHeightRows:kRowsPerPage squish:1];
     CGFloat top = Lerp([self qqsTop], [self qsGridTop], q);
@@ -639,21 +657,29 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
     _media.frame = CGRectMake(inset, Lerp(qqsGridBottom + 16, qsGridBottom + 56, q), w - 2 * inset, [LQSMediaCard height]);
     _media.alpha = 1 - Range(q, 0, 0.5);
     _media.userInteractionEnabled = q < 0.05;
-    // Notifications: under QQS, pushed down with the QS bottom while expanding.
-    CGFloat nTop = Lerp([self qqsBottom] + 12 - (1 - squish) * qqsH, [self qsBottom] + 16, q); // extra 12pt gap above the notification scrim (matches Pixel screenshots)
-    _notifs.frame = CGRectMake(0, nTop, w, MAX(0, b.size.height - nTop));
-    _notifs.alpha = 1 - Range(q, 0, 0.5);
+    // Android keeps stack position separate from QS translation: interpolate
+    // stable top padding, then apply whole-shade expansion exactly once.
+    CGFloat nTop = LQSNotificationTop(p, q, [self qqsBottom] + 12, b.size.height);
+    CGFloat listHeight = LQSNotificationViewportHeight(p, b.size.height, nTop);
+    _notificationArea.frame = CGRectMake(0, nTop, w, MAX(0, b.size.height - nTop));
+    _notificationArea.hidden = _notifs.hidden || p <= 0.001;
+    _notifs.frame = CGRectMake(0, 0, w, listHeight);
+    _notifs.expansionProgress = p;
+    _notifs.qsExpansionProgress = q;
+    // No QS-progress fade: normal notifications are pushed down by QS. Their
+    // opening/closing alpha is the small-screen stack content interpolation.
+    _notifs.alpha = ContentAlpha(p);
     _notifs.userInteractionEnabled = q < 0.05 || _listMode != 0;
-    CGFloat surfaceTop = MAX(0, MIN(b.size.height, nTop + _content.transform.ty));
-    _notificationSurface.frame = CGRectMake(0, surfaceTop, w, b.size.height - surfaceTop);
-    _notificationSurface.alpha = _notifs.alpha;
-    _notificationSurface.hidden = _notifs.hidden;
+    _notificationSurface.frame = _notificationArea.bounds;
+    // ScrimController's native-blur path uses linear shade progress, unlike
+    // notification content alpha. Do not multiply the two alpha hierarchies.
+    _notificationSurface.alpha = p;
 }
 
 - (void)layoutTilesOnly {
     CGFloat q = _q, p = MAX(0, MIN(1, _progress)), w = self.view.bounds.size.width, inset = [LQSTheme sideInset];
     CGFloat cw = [self cellWidth], gap = [LQSTheme tileGap];
-    CGFloat squish = (q > 0) ? 1 : 0.1 + 0.9 * p;
+    CGFloat squish = LQSQuickTileSquish(p, q);
     CGFloat pageOffset = _page * w * q; // pages slide horizontally (InterPageSpacing: page = full width incl. 16dp margins)
     CGFloat qsTop = [self qsGridTop], qqsTop = [self qqsTop], clipTop = _gridClip.frame.origin.y;
     for (NSUInteger i = 0; i < _tiles.count && i < _cells.count; i++) {
@@ -734,7 +760,15 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
 }
 
 - (void)setQ:(CGFloat)q {
+    CGFloat previous = _q;
     _q = MAX(0, MIN(1, q));
+    // NSSL.setQsExpansionFraction resets the notification scroll as QS pushes
+    // it out. Use a ratio so this is independent of the number of animation ticks.
+    UIScrollView *scroll = _notifs.scrollView;
+    if (_q > previous && scroll.contentOffset.y > 0) {
+        CGFloat remaining = (1 - _q) / MAX(0.001, 1 - previous);
+        scroll.contentOffset = CGPointMake(0, scroll.contentOffset.y * remaining);
+    }
     if (_q < 0.999 && _page != 0 && !_pageLink) _page = 0; // QQS always shows page 0
     [self layoutAll];
 }
@@ -816,6 +850,7 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
     _content.hidden = p <= 0.001;
     _content.alpha = ContentAlpha(p);
     _content.transform = CGAffineTransformMakeTranslation(0, -0.175 * (1 - p) * [self qqsBottom]);
+    if (p <= 0.001) _notifs.scrollView.contentOffset = CGPointZero;
     if (p <= 0.001 && _editor) { [_editor removeFromSuperview]; _editor = nil; _state = LQSPanelStateExpanded; [self rebuildTiles]; }
     if (_editor) _content.alpha = 0;
     if (p <= 0.001 && _q > 0) { [_qLink invalidate]; _qLink = nil; _state = LQSPanelStateCompact; _page = 0; [self setQ:0]; }
@@ -841,7 +876,8 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
         if (fabs(v.y) <= fabs(v.x)) return NO;
         if (CGRectContainsPoint(_brightness.frame, loc) && _q > 0.95 && fabs(v.x) > 0) return fabs(v.y) > 2 * fabs(v.x);
         // Inside the notification list the list's own pan handles it (listPan:).
-        if (_q < 0.05 && !_notifs.hidden && CGRectContainsPoint(_notifs.frame, loc)) return NO;
+        CGRect notificationRect = [_notifs convertRect:_notifs.bounds toView:self.view];
+        if (_q < 0.05 && !_notificationArea.hidden && CGRectContainsPoint(notificationRect, [g locationInView:self.view])) return NO;
         return YES;
     }
     return YES;
@@ -857,13 +893,16 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
         case UIGestureRecognizerStateBegan:
             [_qLink invalidate];
             _qLink = nil;
+            [_settleLink invalidate];
+            _settleLink = nil;
             _qStart = _q;
+            _pStart = _progress;
             break;
         case UIGestureRecognizerStateChanged:
             if (_qStart <= 0.001 && dy < 0) {
                 // Collapsing from QQS closes the whole shade: follow the finger, the native CC
                 // dismissal finishes it on release.
-                [self applyPresentationProgress:MAX(0, 1 + dy / MAX(1, [self qqsBottom]))];
+                [self applyPresentationProgress:LQSShadeDragProgress(_pStart, dy, self.view.bounds.size.height)];
             } else {
                 [self setQ:_qStart + dy / travel];
             }
@@ -895,8 +934,12 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
         case UIGestureRecognizerStateBegan:
             _listMode = 0;
             _listDecided = NO;
+            _listScrollStart = sv.contentOffset.y;
+            _pStart = _progress;
             [_qLink invalidate];
             _qLink = nil;
+            [_settleLink invalidate];
+            _settleLink = nil;
             break;
         case UIGestureRecognizerStateChanged: {
             if (!_listDecided && fabs(ty) > 2) {
@@ -911,8 +954,10 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
                 CGFloat travel = MAX(100, [self qsBottom] - [self qqsBottom]);
                 [self setQ:_qStart + (ty - _listModeY) / travel];
             } else if (_listMode == 2) {
-                sv.contentOffset = CGPointMake(0, maxOff);
-                [self applyPresentationProgress:MAX(0, MIN(1, 1 + (ty - _listModeY) / MAX(1, [self qqsBottom])))];
+                // Android freezes scrollY while closing. Re-anchoring to a
+                // changing bottom offset makes cards jump as the stack shrinks.
+                sv.contentOffset = CGPointMake(0, _listScrollStart);
+                [self applyPresentationProgress:LQSShadeDragProgress(_pStart, ty - _listModeY, self.view.bounds.size.height)];
             }
             break;
         }

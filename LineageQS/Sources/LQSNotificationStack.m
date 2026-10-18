@@ -1,5 +1,6 @@
 #import "LQSStrings.h"
 #import "LQSNotificationStack.h"
+#import "LQSLayout.h"
 #import "LQSNotifications.h"
 #import "LQSTheme.h"
 #import "LQSModel.h"
@@ -188,7 +189,7 @@ static void SwipeHaptic(BOOL strong) {
     [super layoutSubviews];
     CGFloat w = self.bounds.size.width, h = self.bounds.size.height;
     UIBezierPath *p = [UIBezierPath bezierPath];
-    CGFloat t = _top, b = _bottom;
+    CGFloat t = MIN(_top, h / 2), b = MIN(_bottom, h / 2);
     [p moveToPoint:CGPointMake(t, 0)];
     [p addLineToPoint:CGPointMake(w - t, 0)];
     [p addArcWithCenter:CGPointMake(w - t, t) radius:t startAngle:-M_PI_2 endAngle:0 clockwise:YES];
@@ -199,10 +200,18 @@ static void SwipeHaptic(BOOL strong) {
     [p addLineToPoint:CGPointMake(0, t)];
     [p addArcWithCenter:CGPointMake(t, t) radius:t startAngle:M_PI endAngle:1.5 * M_PI clockwise:YES];
     [p closePath];
+    // The row height changes every presentation frame; its mask must not run
+    // a second implicit path animation behind the stack geometry.
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
     _shape.frame = self.bounds;
     _shape.path = p.CGPath;
-    _icon.frame = CGRectMake(kMargin, kMargin, kIcon, kIcon);
-    CGFloat right = w - kMargin, x = kContentStart, y = kMargin;
+    [CATransaction commit];
+    // StackScrollAlgorithm changes row height without scaling glyphs. Keep
+    // the normal layout centered within the current, compressed row bounds.
+    CGFloat contentOffset = (h - [self heightForWidth:w]) / 2;
+    _icon.frame = CGRectMake(kMargin, kMargin + contentOffset, kIcon, kIcon);
+    CGFloat right = w - kMargin, x = kContentStart, y = kMargin + contentOffset;
     if (_pill) {
         CGSize cs = [_pillCount sizeThatFits:CGSizeMake(40, 18)];
         CGFloat pw = MAX(26, 8 + cs.width + 2 + 14 + 4);
@@ -290,11 +299,14 @@ static void SwipeHaptic(BOOL strong) {
     UIButton *_manage, *_clear;
     UILabel *_empty;
     UIView *_scrimBg;
+    BOOL _presentationScrollFrozen;
+    CGFloat _presentationScrollY;
 }
 
 - (instancetype)initWithFrame:(CGRect)f {
     if ((self = [super initWithFrame:f])) {
         _showsBackground = YES;
+        _expansionProgress = 1;
         // ShadeColors.classicShadeNotificationScrimBg: customColorSurfaceEffect0 (monet opacity
         // 0.5, CustomDynamicColors.java:344-351) over the shade panel; rounded top (28dp, assumption).
         _scrimBg = [UIView new];
@@ -306,6 +318,7 @@ static void SwipeHaptic(BOOL strong) {
         _scroll.alwaysBounceVertical = YES;
         _scroll.showsVerticalScrollIndicator = NO;
         _scroll.clipsToBounds = YES;
+        _scroll.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
         [self addSubview:_scroll];
         [_scroll insertSubview:_scrimBg atIndex:0]; // scrolls with the rows
         _rows = [NSMutableArray array];
@@ -326,6 +339,24 @@ static void SwipeHaptic(BOOL strong) {
 }
 
 - (UIScrollView *)scrollView { return _scroll; }
+
+- (void)setExpansionProgress:(CGFloat)progress {
+    CGFloat p = MAX(0, MIN(1, progress));
+    if (fabs(_expansionProgress - p) < 0.000001) return;
+    BOOL moving = p > 0.001 && p < 0.999;
+    if (moving && !_presentationScrollFrozen) _presentationScrollY = MAX(0, _scroll.contentOffset.y);
+    _presentationScrollFrozen = moving;
+    if (p <= 0.001) _scroll.contentOffset = CGPointZero;
+    _expansionProgress = p;
+    [self setNeedsLayout];
+}
+
+- (void)setQsExpansionProgress:(CGFloat)progress {
+    CGFloat q = MAX(0, MIN(1, progress));
+    if (fabs(_qsExpansionProgress - q) < 0.000001) return;
+    _qsExpansionProgress = q;
+    [self setNeedsLayout];
+}
 
 // FooterView: pill buttons, 40dp high (assumption), surface container high, onSurface text.
 - (UIButton *)pill:(NSString *)title action:(SEL)sel {
@@ -390,33 +421,42 @@ static void SwipeHaptic(BOOL strong) {
     [super layoutSubviews];
     _scroll.frame = self.bounds;
     self.clipsToBounds = NO;
-    CGFloat w = self.bounds.size.width - 2 * kMargin, y = kMargin + 8; // first row: same visual gap as the side margin
+    if (self.bounds.size.width <= 2 * kMargin || self.bounds.size.height <= 0) return;
+    CGFloat fraction = LQSNotificationStackFraction(self.expansionProgress);
+    CGFloat w = self.bounds.size.width - 2 * kMargin, y = kMargin + 8;
     for (NSUInteger i = 0; i < _rows.count; i++) {
         LQSNotifRow *r = _rows[i];
-        CGFloat h = [r heightForWidth:w];
-        if (CGAffineTransformIsIdentity(r.transform)) r.frame = CGRectMake(kMargin, y, w, h);
-        else r.bounds = CGRectMake(0, 0, w, h);
+        CGFloat h = [r heightForWidth:w] * fraction;
+        r.bounds = CGRectMake(0, 0, w, h);
+        r.center = CGPointMake(kMargin + w / 2, y + h / 2);
         // One section: outer 28dp at the ends, 4dp between rows, 2dp dividers.
         [r setTopRadius:(i == 0 ? kOuterRadius : kInnerRadius) bottomRadius:(i == _rows.count - 1 ? kOuterRadius : kInnerRadius)];
-        y += h + kGap;
+        y += h + kGap * fraction;
     }
     BOOL none = _rows.count == 0;
     _empty.hidden = NO; _manage.hidden = NO; _clear.hidden = NO;
     _empty.alpha = none ? 1 : 0;
-    _manage.alpha = _clear.alpha = none ? 0 : 1;
+    // NSSL hides the notification footer by the midpoint of QS expansion;
+    // normal notification rows are pushed down instead of fading with it.
+    _manage.alpha = _clear.alpha = none ? 0 : 1 - MIN(1, self.qsExpansionProgress / 0.5);
     _manage.transform = _clear.transform = none ? CGAffineTransformMakeScale(0.85, 0.85) : CGAffineTransformIdentity;
-    _manage.userInteractionEnabled = _clear.userInteractionEnabled = !none;
+    _manage.userInteractionEnabled = _clear.userInteractionEnabled = !none && self.qsExpansionProgress < 0.05;
     if (none) {
-        _empty.frame = CGRectMake(kMargin, y + 8, w, 24);
-        y += 56;
+        // StackScrollAlgorithm centers EmptyShadeView in the available stack,
+        // rather than pinning it immediately below the QQS boundary.
+        _empty.frame = CGRectMake(kMargin, MAX(y, (self.bounds.size.height - 24) / 2), w, 24);
+        y = MAX(self.bounds.size.height, CGRectGetMaxY(_empty.frame) + kMargin);
     } else {
-        y += 16 - kGap; // footer margin (assumption)
+        y += (16 - kGap) * fraction;
         CGSize ms = [_manage sizeThatFits:CGSizeMake(200, 40)], cs = [_clear sizeThatFits:CGSizeMake(200, 40)];
         _manage.frame = CGRectMake(kMargin, y, ms.width, 40);
         _clear.frame = CGRectMake(kMargin + w - cs.width, y, cs.width, 40);
         y += 40 + 32; // notification_panel_margin_bottom 32dp
     }
     _scroll.contentSize = CGSizeMake(self.bounds.size.width, y);
+    // A changing contentSize must not re-anchor a scrolled list to its new
+    // bottom during close/reversal. QS-only expansion still resets scrollY.
+    if (_presentationScrollFrozen) _scroll.contentOffset = CGPointMake(0, _presentationScrollY);
     _scrimBg.hidden = !self.showsBackground;
     _scrimBg.frame = CGRectMake(0, 0, self.bounds.size.width, MAX(y, self.bounds.size.height) + 800); // 16dp above the first row
     [_scroll sendSubviewToBack:_scrimBg];

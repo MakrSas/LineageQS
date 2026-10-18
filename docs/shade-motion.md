@@ -346,3 +346,47 @@ Scrim в этой стадии: см. раздел 5.
 Проверено чтением: весь путь legacy (touch, fling, clip, scrim, header), Compose QS (VM, STL, squish, переходы), scene-жесты (SUA, DraggableHandler, SwipeDetector), пружины mechanics (VECS), интерполяторы (INTERP), scrim-интерполяторы (SIA, SCRIM).
 
 Не проверено: фактические значения флагов в сборке, платформенные FlingAnimationUtils и ViewConfiguration, MotionScheme материал3, точная раскладка ShadeHeader MotionLayout (constraint sets `CombinedShadeHeadersConstraintManagerImpl.kt` не разбирались подробно), поведение на устройстве.
+
+
+## 12. Notification-area mapping in the iOS classic single shade
+
+The port follows the classic, non-split QQS-to-QS flow. It must not mix that
+flow with the separate scene-overlay transitions' placeholder fade.
+
+- `NotificationStackScrollLayout.updateStackPosition` interpolates stack Y from
+  zero to the current top padding using whole-shade progress. Top padding follows
+  QS expansion. The port uses `LQSNotificationTop`; it does not subtract squish
+  from a height that has already been squished.
+- `calculateInterpolatedStackHeight` starts from `START_FRACTION = 0.5`.
+  `QuickSettingsControllerImpl.updateExpansion` passes notification squishiness
+  to QQS, and the QS view model constrains it with `0.1 + 0.9 * fraction`.
+  The port's no-shelf model shares `r = lerp(0.5, 1, p)` between card heights/gaps
+  and `0.1 + 0.9*r` for quick-tile height. Android additionally accounts for shelf
+  height, scrim padding, pinned/HUN rows and lockscreen states; those are not a
+  complete part of this UIKit notification-list model.
+- `StackScrollAlgorithm` uses shade content alpha for normal rows on small
+  screens. Expanding QS pushes rows down; it does not fade the entire stack to
+  zero by the QS midpoint. The notification footer is handled separately.
+- The notification surface and rows are siblings of QS content, so QS-only
+  parallax/overshoot cannot detach the list from its background. In the native
+  blur path the scrim uses linear progress while rows use content interpolation.
+  The scrim still extends to the screen bottom; the row viewport ends at the
+  moving shade edge, and becomes zero-height under fully expanded QS.
+- Whole-shade drags use initial panel progress plus drag distance divided by
+  full shade height, as in NotificationPanelViewController; not QQS height.
+- `setQsExpansionFraction` clears notification scroll as QS pushes the list out.
+  Closing freezes the scroll anchor and resets it at the closed endpoint.
+  The empty shade message is centered in the remaining notification viewport.
+
+Production math lives in `LQSLayout.h`. Temporary external checks cover SE/media/
+landscape viewport fixtures, shade-progress/QS-progress sweeps, nonnegative row
+viewports, full-QS push-out, shared stack/tile fractions and shade alpha endpoints.
+No development test files are included in the pull request. Visual checking on
+an iPhone is still required for the UIKit adaptation.
+
+Sources (LineageOS 24):
+
+- [NotificationStackScrollLayout](https://github.com/LineageOS/android_frameworks_base/blob/lineage-24.0/packages/SystemUI/src/com/android/systemui/statusbar/notification/stack/NotificationStackScrollLayout.java)
+- [StackScrollAlgorithm](https://github.com/LineageOS/android_frameworks_base/blob/lineage-24.0/packages/SystemUI/src/com/android/systemui/statusbar/notification/stack/StackScrollAlgorithm.java)
+- [QuickSettingsControllerImpl](https://github.com/LineageOS/android_frameworks_base/blob/lineage-24.0/packages/SystemUI/src/com/android/systemui/shade/QuickSettingsControllerImpl.java)
+- [ScrimController](https://github.com/LineageOS/android_frameworks_base/blob/lineage-24.0/packages/SystemUI/src/com/android/systemui/statusbar/phone/ScrimController.java)

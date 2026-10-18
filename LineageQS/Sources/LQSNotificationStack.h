@@ -10,6 +10,8 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy, nullable) void (^openSettingsURL)(NSString *url);
 @property (nonatomic, readonly) UIScrollView *scrollView;
 @property (nonatomic) BOOL showsBackground; // NO when the panel draws a full-height surface
+@property (nonatomic) CGFloat expansionProgress; // shade open/close progress, not QS expansion
+@property (nonatomic) CGFloat qsExpansionProgress; // only affects notification footer visibility
 - (void)reload;
 - (CGFloat)contentHeight;
 @end
