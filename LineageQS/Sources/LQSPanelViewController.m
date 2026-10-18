@@ -104,6 +104,8 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
     LQSSettings *_settings;
     CGFloat _progress;      // native presentation 0...1
     BOOL _brightnessMirroring;
+    BOOL _closingPresentation;
+    NSUInteger _presentationEpoch, _editorEpoch;
     CGFloat _q;             // QQS (0) -> QS (1)
     CGFloat _qStart;
     CGFloat _pStart;
@@ -535,7 +537,10 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
 }
 
 - (void)showToggleFeedback:(LQSTileView *)tile {
+    NSUInteger epoch = _presentationEpoch;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.45 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if (epoch != self->_presentationEpoch || self->_closingPresentation || self->_progress <= 0.001 ||
+            ![self->_tiles containsObject:tile]) return;
         NSString *state = tile.unavailable ? LQSL(@"tile_unavailable") : LQSL(tile.on ? @"On" : @"Off");
         self->_feedback.text = [NSString stringWithFormat:@"%@ • %@", tile.spec.title, state];
         [UIView animateWithDuration:0.2 animations:^{ self->_feedback.alpha = 1; self->_dots.alpha = 0; }];
@@ -560,6 +565,7 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
 // Container bounce: the pressed tile grows by 8dp towards its end (start on the
 // last column) and the neighbour on that side shrinks (BounceableInfo.kt:33-53).
 - (void)tile:(LQSTileView *)tile pressed:(BOOL)pressed {
+    NSUInteger epoch = _presentationEpoch;
     NSUInteger i = [_tiles indexOfObjectIdenticalTo:tile];
     if (i == NSNotFound || UIAccessibilityIsReduceMotionEnabled()) return;
     LQSCell c; [_cells[i] getValue:&c];
@@ -571,6 +577,7 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
         if (nc.page == c.page && nc.row == c.row) n = _tiles[ni];
     }
     void (^apply)(void) = ^{
+        if (epoch != self->_presentationEpoch || self->_closingPresentation) return;
         if (pressed) {
             [self->_bounce setObject:[NSValue valueWithCGPoint:CGPointMake(lastCol ? -kBounce : 0, kBounce)] forKey:tile];
             if (n) [self->_bounce setObject:[NSValue valueWithCGPoint:CGPointMake(lastCol ? 0 : kBounce, -kBounce)] forKey:n];
@@ -587,6 +594,7 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
         // animateToRest waits until the bounce reached 75% (max 1 s).
         CFTimeInterval wait = MAX(0, 0.06 - (CACurrentMediaTime() - _pressStart));
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(wait * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            if (epoch != self->_presentationEpoch || self->_closingPresentation) return;
             UIViewPropertyAnimator *a = [[UIViewPropertyAnimator alloc] initWithDuration:0 timingParameters:[[UISpringTimingParameters alloc] initWithMass:1 stiffness:1500 damping:2 * sqrt(1500) initialVelocity:CGVectorMake(0, 0)]];
             [a addAnimations:apply];
             [a startAnimation];
@@ -754,19 +762,26 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
 // ToEditMode: tween(500); QS content fades over [0, 0.5], the editor over [0.5, 1].
 - (void)showEditor:(BOOL)animated {
     if (_editor) return;
+    NSUInteger epoch = ++_editorEpoch;
     _editor = [[LQSEditor alloc] initWithFrame:self.view.bounds];
+    LQSEditor *editor = _editor;
     _editor.topInset = 20; // iPhone 8 status bar (statusBarsPadding)
     __weak typeof(self) weakSelf = self;
-    _editor.onExit = ^{ [weakSelf setState:LQSPanelStateExpanded animated:YES]; };
+    _editor.onExit = ^{
+        LQSPanelViewController *s = weakSelf;
+        if (s && epoch == s->_editorEpoch) [s setState:LQSPanelStateExpanded animated:YES];
+    };
     _editor.alpha = 0;
     [self.view addSubview:_editor];
     NSTimeInterval d = (animated && !UIAccessibilityIsReduceMotionEnabled()) ? 0.25 : 0;
     [UIView animateWithDuration:d delay:0 options:UIViewAnimationOptionCurveEaseInOut animations:^{ self->_content.alpha = 0; } completion:^(BOOL f) {
-        [UIView animateWithDuration:d delay:0 options:UIViewAnimationOptionCurveEaseInOut animations:^{ self->_editor.alpha = 1; } completion:nil];
+        if (!f || epoch != self->_editorEpoch || self->_editor != editor) return;
+        [UIView animateWithDuration:d delay:0 options:UIViewAnimationOptionCurveEaseInOut animations:^{ editor.alpha = 1; } completion:nil];
     }];
 }
 
 - (void)hideEditor:(BOOL)animated {
+    NSUInteger epoch = ++_editorEpoch;
     LQSEditor *ed = _editor;
     _editor = nil;
     [self rebuildTiles];
@@ -774,6 +789,7 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
     NSTimeInterval d = (animated && !UIAccessibilityIsReduceMotionEnabled()) ? 0.25 : 0;
     [UIView animateWithDuration:d delay:0 options:UIViewAnimationOptionCurveEaseInOut animations:^{ ed.alpha = 0; } completion:^(BOOL f) {
         [ed removeFromSuperview];
+        if (!f || epoch != self->_editorEpoch || self->_editor || self->_progress <= 0.001) return;
         [UIView animateWithDuration:d delay:0 options:UIViewAnimationOptionCurveEaseInOut animations:^{ self->_content.alpha = ContentAlpha(MAX(0, MIN(1, self->_progress))); } completion:nil];
     }];
 }
@@ -812,22 +828,40 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
 }
 
 - (void)qTick:(CADisplayLink *)l {
+    if (l != _qLink) return;
     CGFloat f = MIN(1, (CACurrentMediaTime() - _qStartTime) / _qDuration);
     CGFloat e = LQSCubic(0.3, 0, 0.1, 1, f);
     [self setQ:Lerp(_qFrom, _qTo, e)];
-    if (f >= 1) { [_qLink invalidate]; _qLink = nil; _state = _qTo > 0.5 ? LQSPanelStateExpanded : LQSPanelStateCompact; }
+    if (f >= 1 && l == _qLink) { [_qLink invalidate]; _qLink = nil; _state = _qTo > 0.5 ? LQSPanelStateExpanded : LQSPanelStateCompact; }
 }
 
 #pragma mark - Presentation (native CC progress)
+
+- (void)preparePresentationDirection:(CGFloat)progress {
+    if (progress < _progress - 0.000001 && !_closingPresentation) {
+        _closingPresentation = YES;
+        ++_presentationEpoch;
+        // A whole-shade close owns the geometry now. Keep current q/page values
+        // for a reversal, but stop clocks and delayed feedback from the old open.
+        [_qLink invalidate]; _qLink = nil;
+        [_pageLink invalidate]; _pageLink = nil;
+        [_bounce removeAllObjects];
+        [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(hideFeedback) object:nil];
+        [_content.layer removeAnimationForKey:@"overshoot"];
+    } else if (progress > _progress + 0.000001) {
+        _closingPresentation = NO;
+    }
+}
 
 - (void)setPresentationProgress:(CGFloat)progress { [self setPresentationProgress:progress interactive:YES]; }
 
 - (void)setPresentationProgress:(CGFloat)progress interactive:(BOOL)interactive {
     progress = MAX(0, MIN(1, progress));
+    [self preparePresentationDirection:progress];
     if (!interactive && _settleLink && fabs(progress - _settleTo) < 0.001) return;
     if (interactive || fabs(progress - _progress) < 0.001) {
         [_settleLink invalidate]; _settleLink = nil;
-        if (interactive) [_content.layer removeAnimationForKey:@"overshoot"];
+        [_content.layer removeAnimationForKey:@"overshoot"];
         [UIView performWithoutAnimation:^{ [self applyPresentationProgress:progress]; }];
         return;
     }
@@ -835,6 +869,7 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
     _settleTo = progress;
     _settleStart = CACurrentMediaTime();
     _settleDuration = UIAccessibilityIsReduceMotionEnabled() ? 0.12 : (progress > _progress ? 0.35 : 0.2 + 0.1 * _progress);
+    [_content.layer removeAnimationForKey:@"overshoot"];
     if (progress > _progress && !UIAccessibilityIsReduceMotionEnabled()) {
         CAKeyframeAnimation *o = [CAKeyframeAnimation animationWithKeyPath:@"transform.translation.y"];
         o.values = @[@0, @(16 * 0.6), @0];
@@ -850,18 +885,20 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
 }
 
 - (void)settleTick:(CADisplayLink *)link {
+    if (link != _settleLink) return;
     CGFloat f = MIN(1, (CACurrentMediaTime() - _settleStart) / _settleDuration);
     BOOL opening = _settleTo > _settleFrom;
     CGFloat e = opening ? LQSCubic(0.4, 0, 0.2, 1, f) : LQSCubic(0.3, 0, 0.5, 1, f);
     [UIView performWithoutAnimation:^{
         [self applyPresentationProgress:self->_settleFrom + (self->_settleTo - self->_settleFrom) * e];
     }];
-    if (f >= 1) { [_settleLink invalidate]; _settleLink = nil; }
+    if (f >= 1 && link == _settleLink) { [_settleLink invalidate]; _settleLink = nil; }
 }
 
 - (void)applyPresentationProgress:(CGFloat)progress {
+    [self preparePresentationDirection:progress];
     if (_progress <= 0.001 && progress > 0.001) { [self refreshRealStates]; [self startLiveUpdates]; }
-    if (progress <= 0.001 && _progress > 0.001) { [self stopLiveUpdates]; [_dialog removeFromSuperview]; _dialog = nil; }
+    if (progress <= 0.001 && _progress > 0.001) { ++_editorEpoch; [self stopLiveUpdates]; [_dialog removeFromSuperview]; _dialog = nil; }
     _progress = progress;
     CGFloat p = MAX(0, MIN(1, progress));
     // layoutAll commits material strength and both scrim alphas together.
@@ -872,10 +909,28 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
     _content.alpha = ContentAlpha(p);
     _content.transform = CGAffineTransformMakeTranslation(0, -0.175 * (1 - p) * [self qqsBottom]);
     if (p <= 0.001) _notifs.scrollView.contentOffset = CGPointZero;
-    if (p <= 0.001 && _editor) { [_editor removeFromSuperview]; _editor = nil; _state = LQSPanelStateExpanded; [self rebuildTiles]; }
+    if (p <= 0.001 && _editor) { [_editor removeFromSuperview]; _editor = nil; [self rebuildTiles]; }
     if (_editor) _content.alpha = 0;
-    if (p <= 0.001 && _q > 0) { [_qLink invalidate]; _qLink = nil; _state = LQSPanelStateCompact; _page = 0; [self setQ:0]; }
-    else [self layoutAll];
+    if (p <= 0.001) {
+        [_qLink invalidate]; _qLink = nil;
+        [_pageLink invalidate]; _pageLink = nil;
+        [_content.layer removeAnimationForKey:@"overshoot"];
+        [_content.layer removeAnimationForKey:@"opacity"];
+        _brightnessMirroring = NO;
+        for (UIView *v in _content.subviews) {
+            [v.layer removeAnimationForKey:@"opacity"];
+            v.alpha = 1;
+        }
+        [_notificationArea.layer removeAnimationForKey:@"opacity"];
+        _notificationArea.alpha = 1;
+        [_backdrop.layer removeAnimationForKey:@"opacity"];
+        [_feedback.layer removeAnimationForKey:@"opacity"];
+        [_dots.layer removeAnimationForKey:@"opacity"];
+        _feedback.alpha = 0;
+        _dots.alpha = 1;
+        _state = LQSPanelStateCompact; _page = 0;
+        [self setQ:0];
+    } else [self layoutAll];
     // Tile/row bounds above schedule nested label layout. Commit that geometry
     // inside this progress tick's performWithoutAnimation, not later inside a
     // native presenter animation transaction (which makes text catch up/snap).
@@ -1020,6 +1075,7 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
 }
 
 - (void)pagePan:(UIPanGestureRecognizer *)g {
+    if (_closingPresentation || _progress <= 0.001) return;
     CGFloat w = self.view.bounds.size.width, dx = [g translationInView:self.view].x, vx = [g velocityInView:self.view].x;
     switch (g.state) {
         case UIGestureRecognizerStateBegan: [_pageLink invalidate]; _pageLink = nil; _pageStart = _page; break;
@@ -1052,11 +1108,12 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
 }
 
 - (void)pageTick:(CADisplayLink *)l {
+    if (l != _pageLink) return;
     CGFloat f = MIN(1, (CACurrentMediaTime() - _pageStartTime) / 0.3); // pager snap (assumption: 300 ms standard)
     _page = Lerp(_pageFrom, _pageTo, LQSCubic(0.4, 0, 0.2, 1, f));
     [self layoutTilesOnly];
     _dots.position = _page;
-    if (f >= 1) { [_pageLink invalidate]; _pageLink = nil; }
+    if (f >= 1 && l == _pageLink) { [_pageLink invalidate]; _pageLink = nil; }
 }
 
 @end
