@@ -142,8 +142,7 @@ static CGFloat Lerp(CGFloat a, CGFloat b, CGFloat t) { return a + (b - a) * t; }
     CGSize size = self.view.bounds.size;
     UpdateGrid(size);
     if (size.width > 0 && size.height > 0) {
-        CGFloat bottom = size.height - self.view.safeAreaInsets.bottom - 12;
-        CGFloat available = bottom - [self qsGridTop] - 48 - 4 - 40;
+        CGFloat available = LQSFooterTop(size.height, self.view.safeAreaInsets.bottom) - [self qsGridTop];
         kRowsPerPage = LQSRowsFitting((int)kRowsPerPage, available, [self tileHeight], [LQSTheme tileGap]);
     }
     return oldColumns != kColumns || oldRows != kRowsPerPage;

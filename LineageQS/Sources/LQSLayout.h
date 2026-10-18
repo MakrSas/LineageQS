@@ -32,7 +32,7 @@ static inline double LQSShadeDragProgress(double start, double delta, double hei
 }
 
 static inline double LQSActionRowTop(double height, double safeBottom) {
-    return fmax(0, height - safeBottom - 12 - 40);
+    return fmax(0, height - safeBottom - 40);
 }
 
 // Pager/Edit sit immediately above the bottom action row, not below the grid.
